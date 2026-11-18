@@ -28,6 +28,8 @@ internal object SettingsPlan {
         SettingSpec.MC_TITLE_TAP,
         SettingSpec.MC_PAGE_BUTTON,
         SettingSpec.SEEK_GLOW,
+        SettingSpec.MC_GLASS_CARD,
+        SettingSpec.MC_GLASS_ALPHA,
         SettingSpec.TAP_TOGGLE,
         SettingSpec.FADE_WALLPAPER,
         SettingSpec.MOTION,

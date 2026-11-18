@@ -7,13 +7,16 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import com.os4.musiccover.Gen
+import com.os4.musiccover.HyperTweaks
 import com.os4.musiccover.Main
+import com.os4.musiccover.Settings
 import com.os4.musiccover.Xp
 import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.ref.WeakReference
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import kotlin.math.roundToInt
 
 /**
  * What the lock screen islands and the shortcut discs are dressed in, and the colour of their
@@ -71,6 +74,18 @@ internal object IslandMaterial {
         private set
     @Volatile private var os3ModeActive: Boolean = false
     private var os3MediaController: WeakReference<Any>? = null
+    private var os3TopIslandBinder: WeakReference<Any>? = null
+    private val os3MediaInkState = java.util.WeakHashMap<Any, Boolean>()
+    private val selfBlurredContainers = java.util.WeakHashMap<View, Boolean>()
+    private var inOs3FgSync = false
+    private var elementBlendMethod: Method? = null
+    private var containerBlurMethod: Method? = null
+    @Volatile private var lastCardBlurDiag: String = "-"
+
+    fun os3GlassCardActive(): Boolean = os3ModeActive && Settings.MC_GLASS_CARD.on()
+
+    fun os3GlassRimActive(): Boolean =
+        os3ModeActive && Settings.MC_GLASS_CARD.on() && !MiniPlayerScene.fullScreenAodActive
 
     /** Told when a recipe arrives or changes, with its key. */
     private var onRecipe: ((String) -> Unit)? = null
@@ -143,6 +158,21 @@ internal object IslandMaterial {
 
     private fun installOs3Hooks(classLoader: ClassLoader) {
         runCatching {
+            val util = Xp.findClass(
+                "com.android.systemui.statusbar.notification.utils.NotificationUtil",
+                classLoader
+            )
+            elementBlendMethod = util.declaredMethods.firstOrNull {
+                it.name == "applyElementViewBlend" && it.parameterTypes.size == 5 &&
+                    it.parameterTypes[3] == IntArray::class.java
+            }?.apply { isAccessible = true }
+            containerBlurMethod = util.declaredMethods.firstOrNull {
+                it.name == "applyContainerViewBlur" && it.parameterTypes.size >= 3 &&
+                    it.parameterTypes[0] == Context::class.java &&
+                    it.parameterTypes[1] == View::class.java
+            }?.apply { isAccessible = true }
+        }.onFailure { Xp.w("MCMini: OS3 NotificationUtil methods unavailable: $it") }
+        runCatching {
             val rowInj = Xp.findClass(
                 "com.android.systemui.statusbar.notification.row.ExpandableNotificationRowInjector",
                 classLoader
@@ -164,7 +194,32 @@ internal object IslandMaterial {
             Xp.hookAll("sysui.mini.os3_media_blur", mediaCtrl, "updateMediaBackground") { chain ->
                 recordOs3Media(chain)
             }
+            Xp.hookAll("sysui.mini.os3_media_fg", mediaCtrl, "updateForegroundColors") { chain ->
+                runOs3MediaForeground(chain)
+            }
         }.onFailure { Xp.w("MCMini: OS3 media blur hook unavailable: $it") }
+        runCatching {
+            val binderCls = Xp.findClass(
+                "com.android.systemui.statusbar.notification.mediaisland.MiuiIslandMediaViewBinderImpl",
+                classLoader
+            )
+            Xp.hookAll("sysui.mini.os3_top_island_attach", binderCls, "attach") { chain ->
+                val res = chain.proceed()
+                chain.thisObject?.let {
+                    os3TopIslandBinder = WeakReference(it)
+                    applyOs3TopIslandTint(it)
+                }
+                res
+            }
+            Xp.hookAll("sysui.mini.os3_top_island_bind", binderCls, "bindMediaData") { chain ->
+                val res = chain.proceed()
+                chain.thisObject?.let {
+                    os3TopIslandBinder = WeakReference(it)
+                    applyOs3TopIslandTint(it)
+                }
+                res
+            }
+        }.onFailure { Xp.w("MCMini: OS3 top media island hook unavailable: $it") }
     }
 
     private fun os3Style(ctx: Context?): String {
@@ -234,7 +289,178 @@ internal object IslandMaterial {
                 keep("media:OS3_MEDIA/${os3Style(bg.context)}", list, bg.background, bg.context)
             }
         }
+        runCatching { applyOs3MediaGlassAfter(ctrl) }
+            .onFailure { Xp.w("MCMini: OS3 media glass apply failed: $it") }
         return result
+    }
+
+    private fun isFullAodNow(): Boolean = MiniPlayerScene.fullScreenAodActive ||
+        (runCatching { fullAodFlag?.getBoolean(null) }.getOrNull() ?: false)
+
+    /**
+     * White ink for the lock-screen media card whenever sheer glass is worn on the keyguard
+     * (statusBarState == 1), while leaving the unlocked notification shade (statusBarState != 1)
+     * in the OEM's own daytime/night ink for clear legibility.
+     */
+    private fun runOs3MediaForeground(chain: io.github.libxposed.api.XposedInterface.Chain): Any? {
+        val ctrl = chain.thisObject ?: return chain.proceed()
+        val sbState = runCatching { Xp.getObjectField(ctrl, "statusBarState") as? Int }.getOrNull() ?: 0
+        val forceDark = os3GlassCardActive() && sbState == 1 && !isFullAodNow()
+        if (!forceDark) return chain.proceed()
+        val origCtx = runCatching { Xp.getObjectField(ctrl, "context") as? Context }.getOrNull()
+            ?: return chain.proceed()
+        val alreadyNight = (origCtx.resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        if (alreadyNight) return chain.proceed()
+        Xp.setObjectField(ctrl, "context", darkContext(origCtx))
+        return try {
+            chain.proceed()
+        } finally {
+            runCatching { Xp.setObjectField(ctrl, "context", origCtx) }
+        }
+    }
+
+    private fun applyOs3MediaGlassAfter(ctrl: Any) {
+        val holder = runCatching { Xp.getObjectField(ctrl, "holder") }.getOrNull() ?: return
+        val mediaBg = runCatching { Xp.getObjectField(holder, "mediaBg") as? View }.getOrNull() ?: return
+        val sbState = runCatching { Xp.getObjectField(ctrl, "statusBarState") as? Int }.getOrNull() ?: 0
+        val fullAod = isFullAodNow()
+        val onKeyguard = sbState == 1 && !fullAod
+        ensureMediaCardBlurContainer(mediaBg.context, mediaBg, onKeyguard)
+        val glassWanted = os3GlassCardActive() && onKeyguard
+        if (glassWanted) {
+            applyElementBlend(mediaBg.context, mediaBg, HyperTweaks.os3GlassBlendColors(),
+                mediaBg.context.classLoader)
+            mediaBg.background = makeGlassRimDrawable(mediaBg)
+        }
+        val prevInk = synchronized(os3MediaInkState) { os3MediaInkState.put(ctrl, glassWanted) }
+        if (prevInk != glassWanted && !inOs3FgSync) {
+            inOs3FgSync = true
+            try {
+                Xp.callMethod(ctrl, "updateForegroundColors")
+            } finally {
+                inOs3FgSync = false
+            }
+        }
+    }
+
+    private fun ensureMediaCardBlurContainer(ctx: Context, mediaBg: View, onKeyguard: Boolean) {
+        val container = mediaBg.parent as? View ?: return
+        if (!onKeyguard) {
+            clearAllSelfContainerBlur()
+            lastCardBlurDiag = "shade/aod(cleared)"
+            return
+        }
+        var anc: View? = container.parent as? View
+        var ancSource: View? = null
+        while (anc != null) {
+            val radius = runCatching {
+                View::class.java.getMethod("getMiBackgroundBlurRadius").invoke(anc) as Int
+            }.getOrDefault(0)
+            val mode = runCatching {
+                View::class.java.getMethod("getMiBackgroundBlurMode").invoke(anc) as Int
+            }.getOrDefault(0)
+            if (radius > 0 && mode != 0) {
+                ancSource = anc
+                break
+            }
+            anc = anc.parent as? View
+        }
+        if (ancSource != null) {
+            clearAllSelfContainerBlur()
+            lastCardBlurDiag = "anc:${ancSource.javaClass.simpleName}"
+            return
+        }
+        val m = containerBlurMethod ?: return
+        val args = arrayOfNulls<Any>(m.parameterTypes.size)
+        args[0] = ctx
+        args[1] = container
+        for (i in 2 until m.parameterTypes.size) {
+            args[i] = when (m.parameterTypes[i]) {
+                Int::class.javaPrimitiveType -> 0
+                Boolean::class.javaPrimitiveType -> false
+                else -> null
+            }
+        }
+        runCatching {
+            m.invoke(null, *args)
+            synchronized(selfBlurredContainers) { selfBlurredContainers[container] = true }
+            lastCardBlurDiag = "self:${container.javaClass.simpleName}"
+        }.onFailure { lastCardBlurDiag = "err:$it" }
+    }
+
+    private fun clearAllSelfContainerBlur() {
+        val targets = synchronized(selfBlurredContainers) {
+            selfBlurredContainers.keys.toList().also { selfBlurredContainers.clear() }
+        }
+        for (container in targets) {
+            runCatching {
+                View::class.java.getMethod("setMiBackgroundBlurMode", Int::class.javaPrimitiveType)
+                    .invoke(container, 0)
+            }
+            runCatching {
+                View::class.java.getMethod("setMiBackgroundBlurRadius", Int::class.javaPrimitiveType)
+                    .invoke(container, 0)
+            }
+            runCatching {
+                View::class.java.getMethod("setPassWindowBlurEnabled", Boolean::class.javaPrimitiveType)
+                    .invoke(container, false)
+            }
+        }
+    }
+
+    private fun applyElementBlend(ctx: Context, view: View, colors: IntArray, classLoader: ClassLoader) {
+        val m = elementBlendMethod ?: Xp.findClass(
+            "com.android.systemui.statusbar.notification.utils.NotificationUtil", classLoader
+        ).declaredMethods.first {
+            it.name == "applyElementViewBlend" && it.parameterTypes.size == 5 &&
+                it.parameterTypes[3] == IntArray::class.java
+        }.apply { isAccessible = true }.also { elementBlendMethod = it }
+        m.invoke(null, ctx, view, false, colors, false)
+    }
+
+    private fun makeGlassRimDrawable(view: View): GradientDrawable {
+        val res = view.resources
+        val density = res.displayMetrics.density
+        val outlineR = Main.outlineRadius(view)
+        val radius = if (outlineR > 0f) outlineR else {
+            val id = res.getIdentifier("notification_item_bg_radius", "dimen", "com.android.systemui")
+            if (id != 0) res.getDimension(id) else 24f * density
+        }
+        val strokePx = (density * 0.85f).roundToInt().coerceAtLeast(2)
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = radius
+            setColor(0x00000000)
+            setStroke(strokePx, 0x34FFFFFF)
+        }
+    }
+
+    private fun applyOs3TopIslandTint(binder: Any) {
+        val targetAlpha = if (os3GlassCardActive()) {
+            (0.10f + Settings.MC_GLASS_ALPHA.get() * 0.55f).coerceIn(0.08f, 0.50f)
+        } else {
+            1f
+        }
+        for (field in arrayOf("holder", "dummyHolder")) {
+            val h = runCatching { Xp.getObjectField(binder, field) }.getOrNull() ?: continue
+            val bg = runCatching { Xp.getObjectField(h, "mediaBgView") as? View }.getOrNull() ?: continue
+            if (kotlin.math.abs(bg.alpha - targetAlpha) > 0.005f) {
+                bg.alpha = targetAlpha
+            }
+        }
+    }
+
+    fun onOs3GlassSettingChanged() {
+        inkAt = 0L
+        os3MediaController?.get()?.let { ctrl ->
+            runCatching { Xp.callMethod(ctrl, "updateMediaBackground") }
+            runCatching { Xp.callMethod(ctrl, "updateForegroundColors") }
+        }
+        os3TopIslandBinder?.get()?.let { binder ->
+            runCatching { applyOs3TopIslandTint(binder) }
+        }
     }
 
     private fun method(o: Any, name: String): Method = getValue.getOrPut(o.javaClass) {
@@ -485,6 +711,9 @@ internal object IslandMaterial {
     /** Whether a recipe with [key] is what the islands would wear now: worth dressing them again. */
     fun wouldWear(key: String): Boolean {
         if (os3ModeActive) {
+            if (os3GlassCardActive() && !MiniPlayerScene.fullScreenAodActive) {
+                return key == "OS3_GLASS/LOCK"
+            }
             val st = os3Style(Main.sAppCtx)
             return key == "OS3_ROW/$st" || (recipes["OS3_ROW/$st"] == null && key == "media:OS3_MEDIA/$st")
         }
@@ -496,7 +725,11 @@ internal object IslandMaterial {
     /** The key the islands are dressed by; the last one known when the state cannot be read. */
     fun islandKey(context: Context?): String? {
         if (os3ModeActive) {
-            val k = "OS3_ROW/${os3Style(context)}"
+            val k = if (os3GlassCardActive() && !MiniPlayerScene.fullScreenAodActive) {
+                "OS3_GLASS/LOCK"
+            } else {
+                "OS3_ROW/${os3Style(context)}"
+            }
             if (k != lastKnownKey) {
                 lastKnownKey = k
                 context?.let { c -> runCatching { prefs(c).edit().putString(LAST_KEY, k).apply() } }
@@ -527,6 +760,17 @@ internal object IslandMaterial {
     fun replay(view: ImageView, classLoader: ClassLoader): String {
         val ctx = view.context
         val key = islandKey(ctx) ?: error("no material state yet")
+        if (key == "OS3_GLASS/LOCK") {
+            val colors = HyperTweaks.os3GlassBlendColors()
+            view.setImageDrawable(null)
+            view.background = null
+            applyElementBlend(ctx, view, colors, classLoader)
+            view.invalidate()
+            val pct = (Settings.MC_GLASS_ALPHA.get() * 100f).roundToInt()
+            val worn = "OS3_GLASS/$pct%"
+            dressedAs[view] = worn
+            return worn
+        }
         val s = state()
         val row = recipes[key] ?: load(ctx, classLoader, key)
         val worn: String
@@ -573,6 +817,7 @@ internal object IslandMaterial {
             runCatching { sdf.method.invoke(null, *args) }
         }
         dressedAs[view] = worn
+        view.invalidate()
         return worn
     }
 
@@ -700,9 +945,10 @@ internal object IslandMaterial {
             val fullAod = MiniPlayerScene.fullScreenAodActive ||
                 (runCatching { fullAodFlag?.getBoolean(null) }.getOrNull() ?: false)
             val glass = if (!hasGlassApi) {
-                (context.resources.configuration.uiMode and
-                    android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-                    android.content.res.Configuration.UI_MODE_NIGHT_YES
+                os3GlassCardActive() ||
+                    ((context.resources.configuration.uiMode and
+                        android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                        android.content.res.Configuration.UI_MODE_NIGHT_YES)
             } else {
                 interactor?.get()?.let { glassMethod?.invoke(it) as? Boolean }
                     ?: (android.provider.Settings.Secure.getInt(context.contentResolver, "material_style", 1) == 1)
@@ -858,7 +1104,7 @@ internal object IslandMaterial {
     fun describe(): String {
         val s = state()
         return "imat=[state=${s?.let { "${it.typeName}/${it.styleName}" } ?: if (os3ModeActive) "OS3/${os3Style(Main.sAppCtx)}" else "none"} " +
-            "key=${islandKey(Main.sAppCtx)} " +
+            "key=${islandKey(Main.sAppCtx)} cardBlur=$lastCardBlurDiag " +
             "interactor=${interactor?.get() != null} recipes={" +
             recipes.entries.joinToString(",") { (k, r) -> "$k:${r.calls.size}" } +
             "} clears={${clears.keys.joinToString(",")}} sdf=${lastSdf != null} row=${lastRow?.get() != null} " +
@@ -867,9 +1113,19 @@ internal object IslandMaterial {
 
     /** Retirement: the views and the row it held. The hooks are the ledger's. */
     fun retire() {
+        clearAllSelfContainerBlur()
+        os3TopIslandBinder?.get()?.let { binder ->
+            for (field in arrayOf("holder", "dummyHolder")) {
+                val h = runCatching { Xp.getObjectField(binder, field) }.getOrNull() ?: continue
+                val bg = runCatching { Xp.getObjectField(h, "mediaBgView") as? View }.getOrNull() ?: continue
+                bg.alpha = 1f
+            }
+        }
+        synchronized(os3MediaInkState) { os3MediaInkState.clear() }
         dressedAs.clear()
         lastRow = null
         os3MediaController = null
+        os3TopIslandBinder = null
         recording = null
         recordTarget = null
         effectDepth = 0

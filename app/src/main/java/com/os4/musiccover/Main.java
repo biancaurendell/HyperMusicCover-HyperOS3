@@ -890,6 +890,16 @@ public class Main extends XposedModule {
         } catch (Throwable t) {
             Xp.w(TAG + "pickup setting not bound: " + t);
         }
+        try {
+            Settings.After glassChanged = c -> {
+                MiniPlayerRuntime.onOs3GlassSettingChanged();
+                HyperTweaks.refreshPluginIslandGlass();
+            };
+            Settings.MC_GLASS_CARD.then(glassChanged);
+            Settings.MC_GLASS_ALPHA.then(glassChanged);
+        } catch (Throwable t) {
+            Xp.w(TAG + "glass card settings not bound: " + t);
+        }
     }
 
     /**

@@ -585,6 +585,14 @@ object MiniPlayerRuntime {
         }
     }
 
+    /** Re-applies sheer glass look to lock-screen card, top media island and super island. */
+    @JvmStatic fun onOs3GlassSettingChanged() {
+        IslandMaterial.onOs3GlassSettingChanged()
+        islandKey = IslandMaterial.islandKey(Main.sAppCtx)
+        bumpGeneration(BUMP_KEY)
+        refresh()
+    }
+
     /** For IslandMaterial: a line in the material log. */
     internal fun matNoteFor(what: String) = matNote(what)
 

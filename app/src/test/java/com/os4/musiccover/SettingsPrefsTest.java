@@ -32,7 +32,7 @@ public class SettingsPrefsTest {
             else out.add(e.spec.key);
         }
         assertEquals(NOT_KEPT, out);
-        assertEquals(30, kept.size());
+        assertEquals(32, kept.size());
     }
 
     @Test

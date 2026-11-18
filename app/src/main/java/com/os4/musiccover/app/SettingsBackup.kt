@@ -29,6 +29,8 @@ object SettingsBackup {
     private const val KEY_MOTION_ON_DATA = "motionOnData"
     private const val KEY_FORCE_COLON = "forceClockColon"
     private const val KEY_MEDIA_BAR_GLOW = "mediaBarGlow"
+    private const val KEY_MEDIA_GLASS_CARD = "mediaGlassCard"
+    private const val KEY_MEDIA_GLASS_ALPHA = "mediaGlassAlpha"
     private const val KEY_LYRICS_KEEP_ON = "lyricsKeepOn"
     private const val KEY_LYRICS_HDR = "lyricsHdr"
     private const val KEY_LYRICS_TRANS = "lyricsTranslation"
@@ -77,6 +79,8 @@ object SettingsBackup {
             json.put(KEY_MOTION_ON_DATA, module.motionOnData)
             json.put(KEY_FORCE_COLON, module.forceColon)
             json.put(KEY_MEDIA_BAR_GLOW, module.mediaBarGlow)
+            json.put(KEY_MEDIA_GLASS_CARD, module.mediaGlassCard)
+            json.put(KEY_MEDIA_GLASS_ALPHA, module.mediaGlassAlpha.toDouble())
             json.put(KEY_LYRICS_KEEP_ON, module.lyricsKeepOn)
             json.put(KEY_LYRICS_HDR, module.lyricsHdr)
             json.put(KEY_LYRICS_TRANS, module.lyricsTrans)
@@ -154,6 +158,12 @@ object SettingsBackup {
             }
             if (obj.has(KEY_MEDIA_BAR_GLOW)) {
                 ModuleBridge.setMediaBarGlow(context, obj.getBoolean(KEY_MEDIA_BAR_GLOW))
+            }
+            if (obj.has(KEY_MEDIA_GLASS_CARD)) {
+                ModuleBridge.setMediaGlassCard(context, obj.getBoolean(KEY_MEDIA_GLASS_CARD))
+            }
+            if (obj.has(KEY_MEDIA_GLASS_ALPHA)) {
+                ModuleBridge.setMediaGlassAlpha(context, obj.getDouble(KEY_MEDIA_GLASS_ALPHA).toFloat())
             }
             if (obj.has(KEY_LYRICS_HDR)) {
                 ModuleBridge.setLyricsHdr(context, obj.getBoolean(KEY_LYRICS_HDR))

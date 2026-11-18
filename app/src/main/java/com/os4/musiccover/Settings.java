@@ -870,6 +870,27 @@ public final class Settings {
             .op("seekglow", "on", Absent.TOGGLE)
             .file("seekglow");
 
+    /**
+     * Sheer frosted glass style for the lock-screen media card and music islands on HyperOS 3,
+     * keeping the unlocked notification shade at the OEM's readable styling.
+     */
+    public static final Bool MC_GLASS_CARD = new Bool(SettingSpec.MC_GLASS_CARD)
+            .op("mcglass", "on", Absent.TOGGLE)
+            .file("mcglass");
+
+    /** Veil opacity over real-time blur for {@link #MC_GLASS_CARD}: 0..0.70, default 0.22. */
+    public static final Real MC_GLASS_ALPHA = new Real(SettingSpec.MC_GLASS_ALPHA)
+            .op("mcglassalpha", "v", Absent.DEFAULT).save(Save.SOON)
+            .apply((c, v) -> {
+                float clamped = Math.max(SettingSpec.MC_GLASS_ALPHA.min,
+                        Math.min(SettingSpec.MC_GLASS_ALPHA.max, v));
+                Settings.MC_GLASS_ALPHA.set(clamped);
+                return true;
+            })
+            .file("mcglassalpha", () -> String.valueOf(Settings.MC_GLASS_ALPHA.get()),
+                    v -> Settings.MC_GLASS_ALPHA.set(Math.max(SettingSpec.MC_GLASS_ALPHA.min,
+                            Math.min(SettingSpec.MC_GLASS_ALPHA.max, Float.parseFloat(v)))));
+
     // The transition.
 
     /**

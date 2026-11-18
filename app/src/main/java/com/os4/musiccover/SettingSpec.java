@@ -103,6 +103,10 @@ public final class SettingSpec {
     public static final SettingSpec MC_ART_IN_LYRICS = bool("mclyricart", true);
     /** Light the card's progress bar (#49). */
     public static final SettingSpec SEEK_GLOW = bool("seekglow", true);
+    /** Sheer frosted glass style for the lock-screen media card and music islands on HyperOS 3. */
+    public static final SettingSpec MC_GLASS_CARD = bool("mcglass", true);
+    /** Sheer glass tint opacity (0 = crystal clear blur, 0.22 = default, 0.70 = smoked). */
+    public static final SettingSpec MC_GLASS_ALPHA = real("mcglassalpha", 0.22f, 0f, 0.70f);
 
     // ---------------------------------------------------------------- the transition
 

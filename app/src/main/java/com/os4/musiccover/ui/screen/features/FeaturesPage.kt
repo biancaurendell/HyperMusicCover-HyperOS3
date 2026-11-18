@@ -28,6 +28,7 @@ import com.os4.musiccover.app.CoverActivity
 import com.os4.musiccover.island.MiniPlayerConfig
 import com.os4.musiccover.app.ModuleBridge
 import com.os4.musiccover.R
+import com.os4.musiccover.SettingSpec
 import com.os4.musiccover.app.ShadeActivity
 import com.os4.musiccover.app.MiniPlayerActivity
 import com.os4.musiccover.app.TransitActivity
@@ -690,6 +691,32 @@ private fun CardGroup(
                 ModuleBridge.setMediaBarGlow(context, it)
             },
         )
+        SwitchPreference(
+            title = stringResource(R.string.media_glass_card),
+            summary = stringResource(R.string.media_glass_card_summary),
+            checked = module.mediaGlassCard,
+            enabled = enabled,
+            onCheckedChange = {
+                onChange(module.copy(mediaGlassCard = it))
+                ModuleBridge.setMediaGlassCard(context, it)
+            },
+        )
+        FoldUnder(module.mediaGlassCard, settled = enabled) {
+            ValueSlider(
+                title = stringResource(R.string.media_glass_alpha),
+                value = module.mediaGlassAlpha.coerceIn(
+                    SettingSpec.MC_GLASS_ALPHA.min, SettingSpec.MC_GLASS_ALPHA.max),
+                valueRange = SettingSpec.MC_GLASS_ALPHA.min..SettingSpec.MC_GLASS_ALPHA.max,
+                enabled = enabled,
+                detent = SettingSpec.MC_GLASS_ALPHA.defFloat,
+                label = { "${(it * 100f).roundToInt()}%" },
+                onValueChange = {
+                    val alpha = (it * 100f).roundToInt() / 100f
+                    onChange(module.copy(mediaGlassAlpha = alpha))
+                    ModuleBridge.setMediaGlassAlpha(context, alpha)
+                },
+            )
+        }
         // Sits here because that is where it was asked for, but it is not a card setting and does
         // not follow cover mode, unlike the switches above it - which the rows no longer say, so
         // it is only in the module and in this comment. No onCardRestyled(): the preview above

@@ -231,6 +231,8 @@ object SettingsStore {
             mcTitleTap = p.getBoolean(SettingSpec.MC_TITLE_TAP.key, state.mcTitleTap),
             mcPageButton = p.getBoolean(SettingSpec.MC_PAGE_BUTTON.key, state.mcPageButton),
             mediaBarGlow = p.getBoolean(SettingSpec.SEEK_GLOW.key, state.mediaBarGlow),
+            mediaGlassCard = p.getBoolean(SettingSpec.MC_GLASS_CARD.key, state.mediaGlassCard),
+            mediaGlassAlpha = p.getFloat(SettingSpec.MC_GLASS_ALPHA.key, state.mediaGlassAlpha),
             hideFingerprint = p.getBoolean(SettingSpec.HIDE_FP.key, state.hideFingerprint),
             motionCover = p.getBoolean(SettingSpec.MOTION.key, state.motionCover),
             motionOnData = p.getBoolean(SettingSpec.MOTION_ON_DATA.key, state.motionOnData),

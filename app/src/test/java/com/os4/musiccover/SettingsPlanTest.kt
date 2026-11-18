@@ -31,7 +31,7 @@ class SettingsPlanTest {
             SettingSpec.LYRIC_TRANS_WEIGHT.key,
         )
         assertEquals(module, app)
-        assertEquals(35, SettingsPlan.specs.size)
+        assertEquals(37, SettingsPlan.specs.size)
     }
 
     @Test

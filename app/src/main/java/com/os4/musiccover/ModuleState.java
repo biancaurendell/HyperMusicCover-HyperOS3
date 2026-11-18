@@ -167,6 +167,8 @@ public final class ModuleState {
             setting(Settings.LYRICS),
             setting(Settings.COLON),
             setting(Settings.SEEK_GLOW),
+            setting(Settings.MC_GLASS_CARD),
+            setting(Settings.MC_GLASS_ALPHA),
             setting(Settings.LYRIC_KEEP_ON),
             // The two-finger tap's page.
             bool("lyrichidden", () -> LockLyrics.sTapHidden, on -> LockLyrics.sTapHidden = on),

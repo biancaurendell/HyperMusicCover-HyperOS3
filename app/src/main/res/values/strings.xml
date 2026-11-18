@@ -149,6 +149,9 @@
     <string name="card_page_button">卡片上显示封面/歌词切换按钮</string>
     <string name="card_page_button_summary">会挡住下一首右边原来的按钮</string>
     <string name="media_bar_glow">进度条光效</string>
+    <string name="media_glass_card">通透毛玻璃播放框</string>
+    <string name="media_glass_card_summary">锁屏音乐卡片与胶囊音乐岛启用实时模糊半透玻璃风格（下拉通知栏保持原样）</string>
+    <string name="media_glass_alpha">玻璃遮罩浓度</string>
     <string name="lyrics_two_finger_tap">双指单击封面切换歌词</string>
     <!-- The provider module, in three states rather than two. "Installed" is not the question
          that matters - LyricInfo is an LSPosed module, and one that is installed but not enabled,

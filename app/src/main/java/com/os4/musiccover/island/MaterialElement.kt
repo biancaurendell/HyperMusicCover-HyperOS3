@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.os4.musiccover.island
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.RectF
 import android.view.ViewOutlineProvider
 import android.widget.ImageView
+import kotlin.math.min
 
 /**
  * The element a pill or a disc wears the card's material on, keeping the outline it is given.
@@ -26,7 +31,41 @@ internal class MaterialElement(context: Context) : ImageView(context) {
             }
         }
 
+    private val rimOutline = Outline()
+    private val rimRect = RectF()
+    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = 0x34FFFFFF
+    }
+
+    init {
+        setWillNotDraw(false)
+    }
+
     override fun setOutlineProvider(provider: ViewOutlineProvider?) {
         super.setOutlineProvider(shape ?: provider)
+    }
+
+    override fun invalidateOutline() {
+        super.invalidateOutline()
+        if (IslandMaterial.os3GlassRimActive()) invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (!IslandMaterial.os3GlassRimActive()) return
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 2f || h <= 2f) return
+        val stroke = (resources.displayMetrics.density * 0.85f).coerceAtLeast(1.5f)
+        val half = stroke * 0.5f
+        val r = runCatching {
+            outlineProvider?.getOutline(this, rimOutline)
+            rimOutline.radius
+        }.getOrDefault(-1f).let { if (it > 0f) it else min(w, h) * 0.5f }
+        rimPaint.strokeWidth = stroke
+        rimRect.set(half, half, w - half, h - half)
+        val rr = (r - half).coerceAtLeast(0f)
+        canvas.drawRoundRect(rimRect, rr, rr, rimPaint)
     }
 }

@@ -109,9 +109,11 @@ sysui.glass.config_changed
 sysui.glass.default_get.*
 sysui.glass.default_theme_controller
 sysui.glass.default_update.*
+sysui.glass.island_expanded_bg
 sysui.glass.keyguard_theme_ctor
 sysui.glass.keyguard_theme_get.*
 sysui.glass.loader_watch
+sysui.glass.sysui_blur_cfg
 sysui.glass.theme_changed
 sysui.island.cleanup
 sysui.island.filter
@@ -130,7 +132,10 @@ sysui.mini.header_visibility
 sysui.mini.material_state
 sysui.mini.os3_media_blur
 sysui.mini.os3_media_ctor
+sysui.mini.os3_media_fg
 sysui.mini.os3_row_blur
+sysui.mini.os3_top_island_attach
+sysui.mini.os3_top_island_bind
 sysui.mini.remove_transient
 sysui.mini.row_apply
 sysui.mini.row_clear

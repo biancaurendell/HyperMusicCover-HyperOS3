@@ -129,6 +129,9 @@ object ModuleBridge {
         val forceColon: Boolean = SettingSpec.COLON.defBool,
         /** Light the media card's progress bar the way the island's is lit (#49). On by default. */
         val mediaBarGlow: Boolean = SettingSpec.SEEK_GLOW.defBool,
+        /** Sheer frosted glass style for lock-screen media card and music islands on HyperOS 3. */
+        val mediaGlassCard: Boolean = SettingSpec.MC_GLASS_CARD.defBool,
+        val mediaGlassAlpha: Float = SettingSpec.MC_GLASS_ALPHA.defFloat,
         /**
          * Lock screen lyrics, between the collapsed clock and the card. The master switch; the
          * two-finger tap on the lock screen swaps cover and lyrics only while it is on.
@@ -569,6 +572,16 @@ object ModuleBridge {
     fun setMediaBarGlow(context: Context, on: Boolean) =
         setting(context, SettingSpec.SEEK_GLOW, on) {
             send(context, "seekglow") { putExtra("on", on) }
+        }
+
+    fun setMediaGlassCard(context: Context, on: Boolean) =
+        setting(context, SettingSpec.MC_GLASS_CARD, on) {
+            send(context, "mcglass") { putExtra("on", on) }
+        }
+
+    fun setMediaGlassAlpha(context: Context, v: Float) =
+        setting(context, SettingSpec.MC_GLASS_ALPHA, v) {
+            send(context, "mcglassalpha") { putExtra("v", v) }
         }
 
     /** 启用锁屏歌词, the lyrics' master switch. Saved by the module as lyricmaster. */
@@ -1158,6 +1171,8 @@ object ModuleBridge {
             motionOnData = b.bool(SettingSpec.MOTION_ON_DATA),
             forceColon = b.bool(SettingSpec.COLON),
             mediaBarGlow = b.bool(SettingSpec.SEEK_GLOW),
+            mediaGlassCard = b.bool(SettingSpec.MC_GLASS_CARD),
+            mediaGlassAlpha = b.real(SettingSpec.MC_GLASS_ALPHA),
             lyrics = b.bool(SettingSpec.LYRICS),
             lyricsKeepOn = b.bool(SettingSpec.LYRIC_KEEP_ON),
             lyricsHdr = b.bool(SettingSpec.LYRIC_HDR),

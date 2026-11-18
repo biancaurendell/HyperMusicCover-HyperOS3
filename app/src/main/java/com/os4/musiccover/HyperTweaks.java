@@ -62,6 +62,9 @@ public final class HyperTweaks {
     static String describe() {
         StringBuilder sb = new StringBuilder("colon=").append(Settings.COLON.on() ? "on" : "off");
         sb.append(System.lineSeparator()).append("barglow=").append(Settings.SEEK_GLOW.on() ? "on" : "off");
+        sb.append(System.lineSeparator()).append("mcglass=")
+                .append(Settings.MC_GLASS_CARD.on() ? "on" : "off")
+                .append('@').append(Math.round(Settings.MC_GLASS_ALPHA.get() * 100f)).append('%');
         synchronized (STATUS) {
             if (STATUS.isEmpty()) {
                 sb.append(System.lineSeparator())
@@ -124,6 +127,7 @@ public final class HyperTweaks {
         keyguardDepth(cl);
         thirdPartyWallpaperDepth(cl);
         advancedMaterial(cl, "sysui");
+        sysuiBlurGuards(cl);
         softGlassTheme(cl, "sysui");
         softGlassPlugin(cl, "systemui", "sysui");
         // Nothing found from SystemUI's own loader, which is the normal case: wait for the
@@ -340,7 +344,10 @@ public final class HyperTweaks {
     }
 
     private static boolean materialOn(int blur) {
-        return blur == 1 || blur == -1;
+        // 1 is explicitly on, 2 is explicitly off, -1 is field absent, and 0 on HyperOS 3
+        // ROMs with background_blur_status_default=false is "never toggled" on hardware that
+        // supports real-time blur (unlocked by sysuiBlurGuards).
+        return blur != 2;
     }
 
     /**
@@ -1263,14 +1270,174 @@ public final class HyperTweaks {
                 }
             }
             forceThemeFlags(themeUtils);
-            pluginMaterialGuards(
-                    themeUtils.getClassLoader() == null ? cl : themeUtils.getClassLoader(),
-                    idPrefix);
+            ClassLoader pluginLoader =
+                    themeUtils.getClassLoader() == null ? cl : themeUtils.getClassLoader();
+            pluginMaterialGuards(pluginLoader, idPrefix);
+            if ("sysui".equals(idPrefix)) {
+                pluginDynamicIslandGlass(pluginLoader, idPrefix);
+            }
             sPluginHooked = true;
             ok("glass-plugin:" + where);
         } catch (Throwable t) {
             failed("glass-plugin:" + where, t);
         }
+    }
+
+    /**
+     * SystemUI's own MiBlurCompat (distinct from the control centre plugin's class loader).
+     * On HyperOS 3 builds where persist.sys.background_blur_status_default is false, an untouched
+     * "高级材质" switch leaves Configuration.blur at 0 rather than 1, turning off every container
+     * and element blur in SystemUI even though BACKGROUND_BLUR_SUPPORTED is true.
+     */
+    private static void sysuiBlurGuards(ClassLoader cl) {
+        String what = "glass-sysui-blur";
+        Class<?> blurCompat = findClassAny(cl, CLS_MI_BLUR_COMPAT_OS3);
+        if (blurCompat == null) {
+            STATUS.put(what, "not present");
+            return;
+        }
+        try {
+            Method cfgMethod = blurCompat.getDeclaredMethod("getBackgroundBlurOpened",
+                    android.content.res.Configuration.class);
+            cfgMethod.setAccessible(true);
+            Field supportedField = null;
+            try {
+                supportedField = blurCompat.getDeclaredField("BACKGROUND_BLUR_SUPPORTED");
+                supportedField.setAccessible(true);
+            } catch (Throwable ignored) {
+            }
+            final Field sup = supportedField;
+            Xp.hook("sysui.glass.sysui_blur_cfg", cfgMethod, chain -> {
+                Object stock = chain.proceed();
+                if (Boolean.TRUE.equals(stock)) return stock;
+                if (sup != null && !sup.getBoolean(null)) return stock;
+                Object arg = chain.getArgs().isEmpty() ? null : chain.getArgs().get(0);
+                if (arg instanceof android.content.res.Configuration) {
+                    return blurOf((android.content.res.Configuration) arg) != 2
+                            ? Boolean.TRUE : stock;
+                }
+                return stock;
+            });
+            ok(what);
+        } catch (Throwable t) {
+            failed(what, t);
+        }
+    }
+
+    private static final java.util.Map<Object, Boolean> sPluginIslandViews =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<Object, Boolean>());
+
+    /**
+     * Top Dynamic Island expanded media card in MIUISystemUIPlugin: replaces the heavy LAB-clamped
+     * shade blend with sheer frosted glass when MC_GLASS_CARD is on (while MiuiIslandMediaViewBinder
+     * lowers MusicBgView's opaque gradient alpha so the live backdrop blur shines through).
+     */
+    private static void pluginDynamicIslandGlass(ClassLoader cl, String idPrefix) {
+        String what = "glass-plugin-island";
+        Class<?> baseContent = findClassAny(cl,
+                "miui.systemui.dynamicisland.window.content.DynamicIslandBaseContentView");
+        Class<?> blurCompat = findClassAny(cl, CLS_MI_BLUR_COMPAT);
+        if (baseContent == null || blurCompat == null) {
+            STATUS.put(what, "not present");
+            return;
+        }
+        try {
+            Method updateBg = baseContent.getDeclaredMethod("updateBackgroundBg",
+                    android.view.View.class, boolean.class);
+            updateBg.setAccessible(true);
+            Method clearM = blurCompat.getDeclaredMethod("clearMiBackgroundBlendColorCompat",
+                    android.view.View.class);
+            clearM.setAccessible(true);
+            Method setM = null;
+            for (Method m : blurCompat.getDeclaredMethods()) {
+                Class<?>[] ps = m.getParameterTypes();
+                if ("setMiBackgroundBlendColors".equals(m.getName()) && ps.length == 3
+                        && ps[0] == android.view.View.class && ps[1] == int[].class
+                        && ps[2] == float.class) {
+                    m.setAccessible(true);
+                    setM = m;
+                    break;
+                }
+            }
+            if (setM == null) {
+                STATUS.put(what, "no setMiBackgroundBlendColors(View,int[],float)");
+                return;
+            }
+            final Method setBlend = setM;
+            Xp.hook(idPrefix + ".glass.island_expanded_bg", updateBg, chain -> {
+                Object self = chain.getThisObject();
+                if (self != null) sPluginIslandViews.put(self, Boolean.TRUE);
+                Object res = chain.proceed();
+                if (!Settings.MC_GLASS_CARD.on()) return res;
+                Object arg0 = chain.getArgs().isEmpty() ? null : chain.getArgs().get(0);
+                if (arg0 instanceof android.view.View
+                        && containsPlayerIsland((android.view.View) arg0, 0)) {
+                    try {
+                        clearM.invoke(null, arg0);
+                        setBlend.invoke(null, arg0, os3GlassBlendColors(), Float.valueOf(1.0f));
+                    } catch (Throwable ignored) {
+                    }
+                }
+                return res;
+            });
+            ok(what);
+        } catch (Throwable t) {
+            failed(what, t);
+        }
+    }
+
+    private static boolean containsPlayerIsland(android.view.View v, int depth) {
+        if (v == null || depth > 4) return false;
+        String cls = v.getClass().getName();
+        if (cls.contains("PlayerIsland") || cls.endsWith("MusicBgView")) return true;
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup vg = (android.view.ViewGroup) v;
+            int n = vg.getChildCount();
+            for (int i = 0; i < n; i++) {
+                if (containsPlayerIsland(vg.getChildAt(i), depth + 1)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** Re-applies expanded top-island background blend when MC_GLASS_CARD or MC_GLASS_ALPHA moves. */
+    static void refreshPluginIslandGlass() {
+        java.util.List<Object> views;
+        synchronized (sPluginIslandViews) {
+            views = new java.util.ArrayList<>(sPluginIslandViews.keySet());
+        }
+        for (Object self : views) {
+            if (!(self instanceof android.view.View)) continue;
+            android.view.View v = (android.view.View) self;
+            if (!v.isAttachedToWindow()) continue;
+            for (String getter : new String[] {"getExpandedView", "getFakeExpandedView"}) {
+                try {
+                    Object child = Xp.callMethod(self, getter);
+                    if (child instanceof android.view.View
+                            && ((android.view.View) child).getParent() != null) {
+                        Xp.callMethod(self, "updateBackgroundBg", child, Boolean.FALSE);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    /**
+     * Two-pass sheer frosted glass blend for HyperOS 3:
+     * 1) Linear Light (mode 100) near-neutral sapphire crystal (0x767A82) so vivid album colours
+     *    shine through at full saturation while gently taming snow-white highlights under white ink;
+     * 2) SRC_OVER (mode 3) smoked glass veil (0x10131A) at the user's chosen MC_GLASS_ALPHA.
+     */
+    public static int[] os3GlassBlendColors() {
+        float a = Math.max(SettingSpec.MC_GLASS_ALPHA.min,
+                Math.min(SettingSpec.MC_GLASS_ALPHA.max, Settings.MC_GLASS_ALPHA.get()));
+        int crystalA = Math.min(255, Math.max(0, Math.round((0.18f + a * 0.45f) * 255f)));
+        int veilA = Math.min(255, Math.max(0, Math.round(a * 255f)));
+        return new int[] {
+                (crystalA << 24) | 0x00767A82, 100,
+                (veilA << 24) | 0x0010131A, 3
+        };
     }
 
     private static void forceThemeFlags(Class<?> themeUtils) {
@@ -1374,12 +1541,14 @@ public final class HyperTweaks {
         Object stock = chain.proceed();
         if (Boolean.TRUE.equals(stock) || blurOf == null) return stock;
         Object arg = chain.getArgs().isEmpty() ? null : chain.getArgs().get(0);
-        android.content.res.Configuration config = arg instanceof android.content.Context
-                ? ((android.content.Context) arg).getResources().getConfiguration()
-                : android.content.res.Resources.getSystem().getConfiguration();
+        android.content.res.Configuration config = arg instanceof android.content.res.Configuration
+                ? (android.content.res.Configuration) arg
+                : arg instanceof android.content.Context
+                        ? ((android.content.Context) arg).getResources().getConfiguration()
+                        : android.content.res.Resources.getSystem().getConfiguration();
         try {
             Object blur = blurOf.invoke(null, config);
-            return blur instanceof Integer && (Integer) blur == 1 ? Boolean.TRUE : stock;
+            return blur instanceof Integer && (Integer) blur != 2 ? Boolean.TRUE : stock;
         } catch (Throwable t) {
             return stock;
         }
