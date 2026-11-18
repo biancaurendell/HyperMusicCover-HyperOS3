@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        The About page opens QQ and Telegram on their own deep links, and both are probed with
+        resolveActivity first, which package visibility would otherwise answer with null. The
+        tg scheme entry covers every Telegram client; the three packages cover QQ, TIM and QQ
+        International, which is all openQqGroup ever aims at.
+    -->
+    <!--
+        The self-updater. INTERNET is install-time and never prompted. The APK is handed to an
+        installer app rather than installed here, but REQUEST_INSTALL_PACKAGES is still declared:
+        the system's own installer refuses a request from an app that does not declare it (AOSP
+        InstallStart, "needs to declare permission"), and without it there is no 安装未知应用
+        switch for this app for the user to turn on. It grants nothing until they do.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <queries>
+        <!-- 指纹快捷功能's app picker: the launchable apps, with their names and icons. -->
+        <package android:name="com.android.systemui" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- Whether a lyric provider module is installed, for the notice on the lyrics page.
+             Declared because package visibility is filtered from Android 11 on: without this the
+             lookup throws NameNotFound even when the package is there. -->
+        <package android:name="com.lidesheng.lyricinfo" />
+        <package android:name="com.lidesheng.lyricinfo.lite" />
+        <package android:name="com.tencent.mobileqq" />
+        <package android:name="com.tencent.tim" />
+        <package android:name="com.tencent.mobileqqi" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="tg" />
+        </intent>
+        <!--
+            The APK intent, so the updater can tell a device with no installer at all apart from
+            one that took the file. No installer is named: which app handles this is the user's
+            choice, made in Settings.
+        -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+    </queries>
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:enableOnBackInvokedCallback="true"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HyperMusicCover">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.HyperMusicCover"
+            android:windowSoftInputMode="adjustResize">
+            <!-- What LSPosed looks for before it falls back to the launcher entry, so the manager
+                 can still open the app while the icon below is hidden. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            The desktop icon lives on an alias rather than on MainActivity, so hiding it disables
+            only this entry point and never the activity itself.
+        -->
+        <activity-alias
+            android:name=".LauncherAlias"
+            android:exported="true"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- The other way back in while the icon is hidden: dial *#*#95993926#*#*. Both actions,
+             as InstallerX Revived registers them; the dialler decides which one it sends. -->
+        <receiver
+            android:name=".SecretCodeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telephony.action.SECRET_CODE" />
+                <data
+                    android:scheme="android_secret_code"
+                    android:host="95993926" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SECRET_CODE" />
+                <data
+                    android:scheme="android_secret_code"
+                    android:host="95993926" />
+            </intent-filter>
+        </receiver>
+
+        <activity
+            android:name=".app.LicenseActivity"
+            android:exported="false"
+            android:label="@string/third_party_licenses_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <!-- The credits, opened from the About page's row under the licence list. -->
+        <activity
+            android:name=".app.CreditsActivity"
+            android:exported="false"
+            android:label="@string/about_credits"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <!-- The features tab's two sub-screens, declared exactly like the licence list above:
+             an Activity each, so the platform supplies the transition and the back handling
+             rather than the features page imitating both. -->
+        <activity
+            android:name=".app.CoverActivity"
+            android:exported="false"
+            android:label="@string/features_cover_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <!-- 歌词外观, opened from the cover screen's lyrics tab. -->
+        <activity
+            android:name=".app.LyricStyleActivity"
+            android:exported="false"
+            android:label="@string/lyrics_style_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <activity
+            android:name=".app.ShadeActivity"
+            android:exported="false"
+            android:label="@string/features_shade_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <activity
+            android:name=".app.MiniPlayerActivity"
+            android:exported="false"
+            android:label="@string/features_mini_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <activity
+            android:name=".app.TransitActivity"
+            android:exported="false"
+            android:label="@string/features_transit_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <activity
+            android:name=".app.FpQuickActivity"
+            android:exported="false"
+            android:label="@string/features_fpquick_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <activity
+            android:name=".app.FpAppPickActivity"
+            android:exported="false"
+            android:label="@string/fpquick_pick_app"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <activity
+            android:name=".app.FpShortcutPickActivity"
+            android:exported="false"
+            android:label="@string/fpquick_pick_shortcut"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <!-- The theme settings, opened from the settings page's interface section. Declared like
+             every other sub-screen above: an Activity, so the platform supplies the transition
+             and the back handling - gesture, button and predictive back - rather than the
+             settings page imitating all three. -->
+        <activity
+            android:name=".app.ThemeActivity"
+            android:exported="false"
+            android:label="@string/settings_theme"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <!-- The payment codes, opened from the home page's donate card. -->
+        <activity
+            android:name=".app.DonateActivity"
+            android:exported="false"
+            android:label="@string/donate_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <!--
+            The module declares itself through META-INF/xposed/ now (java_init.list, module.prop,
+            scope.list), which is how API 102 does it. These stay so a manager still lists the app
+            as a module, and minversion is 102 so anything that only understands the classic API
+            refuses it outright rather than loading it half way and failing at the entry point,
+            which no longer exists in the old shape.
+        -->
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription"
+            android:value="HyperMusicCover by zyl6932 - album art as the HyperOS lock screen wallpaper, with the clock collapsed" />
+        <meta-data android:name="xposedminversion" android:value="102" />
+        <meta-data android:name="xposedscope" android:resource="@array/xposedscope" />
+
+        <!--
+            Only ever serves the downloaded release to an installer app. Not exported, and the
+            single path it exposes is a cache directory this app clears on every attempt.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

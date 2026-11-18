@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Sample backup rules file; uncomment and customize as necessary.
+   See https://developer.android.com/guide/topics/data/autobackup
+   for details.
+   Note: This file is ignored for devices older than API 31
+   See https://developer.android.com/about/versions/12/backup-restore
+-->
+<full-backup-content>
+    <!--
+        The updater's crash bookkeeping. It holds a session id and an elapsedRealtime stamp, both
+        of which are about this device's current uptime - restoring them elsewhere would arm a
+        record that can only ever answer wrong.
+    -->
+    <!-- Which download host answered last time: a fact about this device's network. -->
+    <exclude domain="sharedpref" path="update_source.xml"/>
+</full-backup-content>
