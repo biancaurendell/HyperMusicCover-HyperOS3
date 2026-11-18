@@ -27,9 +27,14 @@ public final class NotifPresence {
     private NotifPresence() {}
 
     private static final String CLS_PANEL = "com.android.keyguard.panel.KeyguardPanelViewController";
+    private static final String CLS_NSSL_INJECTOR =
+            "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayoutControllerInjectorImpl";
     private static final String NAME = "access$updateNotificationState";
+    private static final String NAME_OS3 = "onUpdateNotificationState";
 
     private static Method sUpdate;
+    private static Method sOs3Update;
+    private static final ThreadLocal<Boolean> IN_OS3_UPDATE = new ThreadLocal<>();
     private static Object sPanel;
     /** What the system last said, and what we passed on. */
     private static boolean sSystemSays;
@@ -48,18 +53,51 @@ public final class NotifPresence {
                     sUpdate = m;
                 }
             }
-            Xp.hookAll("sysui.notif.presence", panel, NAME, chain -> {
-                Object[] args = chain.getArgs().toArray();
-                if (args.length != 2 || !(args[1] instanceof Boolean)) return chain.proceed();
-                sPanel = args[0];
-                boolean says = (Boolean) args[1];
-                // Our own re-throw carries the system's word, not a new one.
+            if (sUpdate != null) {
+                Xp.hookAll("sysui.notif.presence", panel, NAME, chain -> {
+                    Object[] args = chain.getArgs().toArray();
+                    if (args.length != 2 || !(args[1] instanceof Boolean)) return chain.proceed();
+                    sPanel = args[0];
+                    boolean says = (Boolean) args[1];
+                    // Our own re-throw carries the system's word, not a new one.
+                    if (!sOurs) sSystemSays = says;
+                    boolean pass = wanted(says);
+                    sPassed = pass;
+                    if (pass != says) args[1] = pass;
+                    return chain.proceed(args);
+                });
+                return;
+            }
+            // HyperOS 3: KeyguardPanelViewController computes hasNotification inside the 0-arg
+            // onUpdateNotificationState() from getVisibleNotificationCount(). Scope the count
+            // override strictly to that call so nothing else in SystemUI sees an altered count.
+            Method os3 = panel.getDeclaredMethod(NAME_OS3);
+            os3.setAccessible(true);
+            Class<?> nssl = Xp.findClass(CLS_NSSL_INJECTOR, cl);
+            Xp.hookAll("sysui.notif.visible_count", nssl, "getVisibleNotificationCount", chain -> {
+                Object res = chain.proceed();
+                if (!Boolean.TRUE.equals(IN_OS3_UPDATE.get()) || !(res instanceof Integer)) {
+                    return res;
+                }
+                int raw = (Integer) res;
+                boolean says = raw > 0;
                 if (!sOurs) sSystemSays = says;
                 boolean pass = wanted(says);
                 sPassed = pass;
-                if (pass != says) args[1] = pass;
-                return chain.proceed(args);
+                if (pass == says) return res;
+                return pass ? Math.max(1, raw) : 0;
             });
+            Xp.hook("sysui.notif.presence", os3, chain -> {
+                sPanel = chain.getThisObject();
+                Boolean prev = IN_OS3_UPDATE.get();
+                IN_OS3_UPDATE.set(Boolean.TRUE);
+                try {
+                    return chain.proceed();
+                } finally {
+                    IN_OS3_UPDATE.set(prev);
+                }
+            });
+            sOs3Update = os3;
         } catch (Throwable t) {
             Xp.w(Main.TAG + "notification presence hook failed: " + t);
         }
@@ -101,7 +139,8 @@ public final class NotifPresence {
     public static void recheck(boolean force) {
         final Object panel = sPanel;
         final Method m = sUpdate;
-        if (panel == null || m == null) return;
+        final Method os3 = sOs3Update;
+        if (panel == null || (m == null && os3 == null)) return;
         long now = android.os.SystemClock.uptimeMillis();
         if (!force && now - sCheckedAt < CHECK_MS) return;
         sCheckedAt = now;
@@ -112,7 +151,8 @@ public final class NotifPresence {
             if (wanted(sSystemSays) == shown(panel)) return;
             sOurs = true;
             try {
-                m.invoke(null, panel, sSystemSays);
+                if (m != null) m.invoke(null, panel, sSystemSays);
+                else if (os3 != null) os3.invoke(panel);
             } catch (Throwable t) {
                 Xp.w(Main.TAG + "notification presence re-throw failed: " + t);
             } finally {
@@ -136,6 +176,6 @@ public final class NotifPresence {
 
     static String describe() {
         return "system=" + sSystemSays + " passed=" + sPassed + " rows=" + rowsShowing()
-                + " hooked=" + (sUpdate != null);
+                + " hooked=" + (sUpdate != null || sOs3Update != null);
     }
 }

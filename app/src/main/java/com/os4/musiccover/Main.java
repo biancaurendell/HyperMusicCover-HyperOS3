@@ -1065,17 +1065,31 @@ public class Main extends XposedModule {
         }
     }
 
+    private static Class<?> findKeyguardServiceBinder(ClassLoader cl) {
+        // OS4 compiles IKeyguardService.Stub as KeyguardService$2; OS3 (16.03.251211.r) compiles
+        // it as KeyguardService$3. Match whichever inner class declares onStartedGoingToSleep.
+        for (int i = 1; i <= 9; i++) {
+            try {
+                Class<?> candidate = Xp.findClass(
+                        "com.android.systemui.keyguard.KeyguardService$" + i, cl);
+                for (Method m : candidate.getDeclaredMethods()) {
+                    if ("onStartedGoingToSleep".equals(m.getName())) return candidate;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
     private static void hookSleepAndWake(final ClassLoader cl) {
-        // The keyguard service hears about sleep and wake before anything is laid out for either.
-        //
-        // Sleep: the start of the fade that leaves only the clock. The small clock is sprung to
-        // the OEM's own (and then the AOD's) clock across it - see ClockCollapse.toAod().
-        //
-        // Wake: flagged on the binder thread itself, because what matters is the pre-draw of the
-        // very first lock screen frame. By the time a post reaches the main thread the OEM may
-        // already have drawn one frame of its full-size clock - which is the flash this prevents.
+        armLeave(cl, "com.android.keyguard.injector.KeyguardViewMediatorInjector",
+                "startKeyguardExitAnimationByInteractiveOrFullAODUnlockAnimation", "inj",
+                "sysui.lyrics.leave.inj");
         try {
-            Class<?> ks = Xp.findClass("com.android.systemui.keyguard.KeyguardService$2", cl);
+            Class<?> ks = findKeyguardServiceBinder(cl);
+            if (ks == null) {
+                throw new ClassNotFoundException("KeyguardService$* with onStartedGoingToSleep");
+            }
             Xp.hookAll("sysui.screen.sleep", ks, "onStartedGoingToSleep", chain -> {
                 Object result = chain.proceed();
                 main().post(new Runnable() {
@@ -1087,26 +1101,7 @@ public class Main extends XposedModule {
                 });
                 return result;
             });
-            // The lock screen leaving, at the moment it starts to leave.
-            //
-            // With the HDR highlight on the lyrics are drawn in a window of their own, so the lock
-            // screen going does not take them with it: their page is gated on the keyguard instead
-            // (LockLyrics.wantsWindow), and the cached answer to that is up to 150ms old - which
-            // was the whole of the residue left over the desktop on an unlock (user, 2026-09-29).
-            // Ask again now, and once more a beat later in case the state flips behind this call.
-            // Each has its own try: a build without the method must not cost the hooks below.
-            //
-            // Only the two that are unambiguously "the lock screen is going away"; the probe
-            // (`lyricstate`'s `hooks=`, and the tag on every trace line) says which armed and
-            // which fired. The others were armed for a round and taken back out: `setOccluded` is
-            // called with true when the AOD occludes the keyguard and with false when the lock
-            // screen comes back, so both ends of a doze read as a dismissal and the lyrics vanished
-            // on every screen-off (user, 2026-09-29), and `hideLocked`/`keyguardDone` are not the
-            // unlock on this build.
             armLeave(ks, "startKeyguardExitAnimation", "exit", "sysui.lyrics.leave.exit");
-            armLeave(cl, "com.android.keyguard.injector.KeyguardViewMediatorInjector",
-                    "startKeyguardExitAnimationByInteractiveOrFullAODUnlockAnimation", "inj",
-                    "sysui.lyrics.leave.inj");
             Xp.hookAll("sysui.screen.wake", ks, "onStartedWakingUp", chain -> {
                 ClockCollapse.noteWaking();
                 main().post(new Runnable() {
@@ -1171,43 +1166,46 @@ public class Main extends XposedModule {
     private static void hookAodHandover() {
         // The OEM's own hand-over between the lock screen and the AOD, both ways.
         //
-        // Into the AOD it lands after the screen fade has gone to black and before the AOD is
-        // visible (measured 33.43 fade end -> 33.62 here -> 33.66 AOD shown -> 33.74
-        // ACTION_SCREEN_OFF), so the AOD gets the full clock with nothing seen. It has to run
-        // BEFORE the call: the call reads the clock's translation and posts it to the AOD plugin.
-        //
-        // Out of it, it is the first thing of the wake (onStartedWakingUp +46ms) and comes before
-        // the OEM starts growing its glyphs from the AOD size - so the collapse starts from the
-        // clock the AOD was showing and absorbs the OEM's growth, instead of racing it.
-        try {
-            Xp.hookAll("sysui.aod.transition", sContainerCls, "doAnimationToAod", chain -> {
-                Object[] args = chain.getArgs().toArray();
-                boolean toAod = args.length > 0 && Boolean.TRUE.equals(args[0]);
-                if (clockHeld() && toAod) {
-                    // Ahead of the broadcast, which is ~110ms behind: the display is no longer
-                    // interactive, and any colour set in between must not get the cover's tint.
-                    sScreenOn = false;
+        // On HyperOS 4 this lives on KeyguardClockContainer.doAnimationToAod(boolean); on
+        // HyperOS 3 it lives on com.android.keyguard.clock.animation.AnimationHelper
+        // .doAnimationToAod(boolean toAod, boolean hasNotification, boolean fromKeyguard), with
+        // args[0] carrying the same toAod boolean.
+        io.github.libxposed.api.XposedInterface.Hooker aodHooker = chain -> {
+            Object[] args = chain.getArgs().toArray();
+            boolean toAod = args.length > 0 && Boolean.TRUE.equals(args[0]);
+            if (clockHeld() && toAod) {
+                sScreenOn = false;
+                CoverCardLayer.refresh();
+                sAodGrey = Float.NaN;
+                ClockCollapse.toAod();
+                AodColour.recolorClock();
+            }
+            Object result = chain.proceed();
+            if (clockHeld() && !toAod && ClockCollapse.leavingOrOff()) {
+                forgetSysReads();
+                if (keyguardShowing()) {
+                    sScreenOn = true;
                     CoverCardLayer.refresh();
                     sAodGrey = Float.NaN;
-                    ClockCollapse.toAod();
+                    ClockGlass.applyGlassBrightness();
+                    ClockCollapse.enter(true, true, "doAnim");
                     AodColour.recolorClock();
                 }
-                Object result = chain.proceed();
-                if (clockHeld() && !toAod && ClockCollapse.leavingOrOff()) {
-                    forgetSysReads();
-                    // Only a wake onto the lock screen. The same call can come with the phone
-                    // unlocked, and the clock there is the shade's.
-                    if (keyguardShowing()) {
-                        sScreenOn = true;
-                        CoverCardLayer.refresh();
-                        sAodGrey = Float.NaN;
-                        ClockGlass.applyGlassBrightness();
-                        ClockCollapse.enter(true, true, "doAnim");
-                        AodColour.recolorClock();
-                    }
-                }
-                return result;
-            });
+            }
+            return result;
+        };
+        try {
+            Xp.hookAll("sysui.aod.transition", sContainerCls, "doAnimationToAod", aodHooker);
+            return;
+        } catch (Throwable ignored) {
+            // Try HyperOS 3's AnimationHelper next.
+        }
+        try {
+            Class<?> helper = Xp.findClass(
+                    "com.android.keyguard.clock.animation.AnimationHelper",
+                    sContainerCls.getClassLoader());
+            Xp.hookAll("sysui.aod.transition", helper, "doAnimationToAod", aodHooker);
+            Xp.log(TAG + "doAnimationToAod hooked via OS3 AnimationHelper");
         } catch (Throwable t) {
             Xp.w(TAG + "doAnimationToAod hook failed, AOD falls back to screen off: " + t);
         }
@@ -1217,26 +1215,35 @@ public class Main extends XposedModule {
         // The system does re-show the cut-out - verified: it came back right after we restored
         // cover mode across a SystemUI restart. Re-hide after the OEM's own update instead of
         // hooking View.setVisibility process-wide, which would tax every view in SystemUI.
+        io.github.libxposed.api.XposedInterface.Hooker depthHooker = chain -> {
+            sDepthInteractor = chain.getThisObject();
+            Object result = chain.proceed();
+            if (sDepthHidden) {
+                try {
+                    View d = (View) Xp.getObjectField(chain.getThisObject(),
+                            "deductedImageView");
+                    if (d != null && d.getVisibility() == View.VISIBLE) {
+                        setDeductedVisibility(d, View.INVISIBLE);
+                        Xp.log(TAG + "depth re-hidden after updateDeductedImageView");
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            return result;
+        };
         try {
             Class<?> depth = Xp.findClass(
                     "com.android.keyguard.depth.KeyguardDepthInteractor", cl);
-            Xp.hookAll("sysui.depth.deducted_image", depth, "updateDeductedImageView", chain -> {
-                sDepthInteractor = chain.getThisObject();
-                Object result = chain.proceed();
-                if (sDepthHidden) {
-                    try {
-                        View d = (View) Xp.getObjectField(chain.getThisObject(),
-                                "deductedImageView");
-                        if (d != null && d.getVisibility() == View.VISIBLE) {
-                            d.setVisibility(View.INVISIBLE);
-                            Xp.log(TAG + "depth re-hidden after updateDeductedImageView");
-                        }
-                    } catch (Throwable ignored) {
-                    }
-                }
-                return result;
-            });
+            Xp.hookAll("sysui.depth.deducted_image", depth, "updateDeductedImageView", depthHooker);
             Xp.log(TAG + "depth ownership hooked");
+            return;
+        } catch (Throwable ignored) {
+            // HyperOS 3 keeps deductedImageView and updateDeductedImageView on KeyguardPanelViewController.
+        }
+        try {
+            Class<?> kpvc = Xp.findClass(CLS_KG_PANEL, cl);
+            Xp.hookAll("sysui.depth.deducted_image", kpvc, "updateDeductedImageView", depthHooker);
+            Xp.log(TAG + "depth ownership hooked via OS3 KeyguardPanelViewController");
         } catch (Throwable t) {
             Xp.w(TAG + "depth ownership hook failed: " + t);
         }

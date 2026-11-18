@@ -13,6 +13,8 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
+import io.github.libxposed.api.XposedInterface;
+
 /**
  * HyperOS restrictions this module lifts, none of which have anything to do with the cover.
  *
@@ -92,8 +94,12 @@ public final class HyperTweaks {
     private static final String CLS_CONFIG_CONTROLLER = "com.android.systemui.statusbar.phone.ConfigurationControllerImpl";
     private static final String CLS_PLUGIN_THEME_UTILS = "miui.systemui.util.ThemeUtils";
     private static final String CLS_MI_BLUR_COMPAT = "miui.systemui.util.MiBlurCompat";
+    private static final String CLS_MI_BLUR_COMPAT_OS3 = "com.miui.systemui.util.MiBlurCompat";
     private static final String CLS_DEFAULT_THEME_CONTROLLER =
             "miui.systemui.controlcenter.windowview.MiuiDefaultThemeControllerImpl";
+    private static final String CLS_DEVICE_CONFIG = "com.miui.clock.utils.DeviceConfig";
+    private static final String CLS_DOZE_HOST_INJECTOR =
+            "com.android.keyguard.injector.DozeServiceHostInjector";
 
     /** The stock threshold: a picture whose subject covers less than a fifth is refused. */
     private static final double DEPTH_THRESHOLD_STOCK = 0.2;
@@ -117,7 +123,8 @@ public final class HyperTweaks {
         openDepthThreshold(cl, "systemui", "sysui.depth.threshold");
         keyguardDepth(cl);
         thirdPartyWallpaperDepth(cl);
-        softGlassTheme(cl);
+        advancedMaterial(cl, "sysui");
+        softGlassTheme(cl, "sysui");
         softGlassPlugin(cl, "systemui", "sysui");
         // Nothing found from SystemUI's own loader, which is the normal case: wait for the
         // plugin's loader to be built.
@@ -155,8 +162,23 @@ public final class HyperTweaks {
         try {
             Class<?> cls = Xp.findClass(
                     "com.android.keyguard.wallpaper.MiuiKeyguardWallPaperManager", cl);
-            Method m = cls.getDeclaredMethod("updateKeyguardWallpaperStateAnim", boolean.class,
-                    boolean.class, int.class, boolean.class, boolean.class, Runnable.class);
+            // Match by shape: OS4's sixth parameter is Runnable, while HyperOS 3's is an inner
+            // KeyguardViewMediatorInjector callback class. Only the first five args are read.
+            Method m = null;
+            for (Method candidate : cls.getDeclaredMethods()) {
+                if (!candidate.getName().equals("updateKeyguardWallpaperStateAnim")) continue;
+                Class<?>[] ps = candidate.getParameterTypes();
+                if (ps.length == 6 && ps[0] == boolean.class && ps[1] == boolean.class
+                        && ps[2] == int.class && ps[3] == boolean.class
+                        && ps[4] == boolean.class) {
+                    m = candidate;
+                    break;
+                }
+            }
+            if (m == null) {
+                throw new NoSuchMethodException("updateKeyguardWallpaperStateAnim(Z,Z,I,Z,Z,*)");
+            }
+            m.setAccessible(true);
             Xp.hook("sysui.wallpaper.unlock_fade", m, chain -> {
                 Object[] args = chain.getArgs().toArray();
                 boolean show = (Boolean) args[0];
@@ -538,6 +560,8 @@ public final class HyperTweaks {
         openDepthThreshold(cl, "aod", "aod.depth.threshold");
         hierarchyBypass(cl);
         aodWallpaperDepth(cl);
+        advancedMaterial(cl, "aod");
+        softGlassTheme(cl, "aod");
         templateLimit(cl);
         historyTrimLimit(cl);
         // The always-on clock is drawn in this process, by the same clock library, so the same
@@ -985,36 +1009,167 @@ public final class HyperTweaks {
      * The static flag is written as well as hooked, because a configuration change recomputes it
      * from the theme and the hooks below only cover the paths that ask.
      */
-    private static void softGlassTheme(ClassLoader cl) {
+    private static Class<?> findClassAny(ClassLoader cl, String... names) {
+        for (String name : names) {
+            try {
+                return Xp.findClass(name, cl);
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasMethod(Class<?> cls, String name, int params) {
+        if (cls == null) return false;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (m.getName().equals(name) && m.getParameterCount() == params) return true;
+        }
+        return false;
+    }
+
+    /** HyperOS 3 gates lock-screen background blur through com.miui.clock.utils.DeviceConfig. */
+    private static void advancedMaterial(ClassLoader cl, String idPrefix) {
+        Class<?> cfg = findClassAny(cl, CLS_DEVICE_CONFIG);
+        if (cfg == null) {
+            STATUS.put("adv-material", "device config not present");
+            return;
+        }
+        boolean any = false;
+        for (String name : new String[] {
+                "SUPPORT_BACKGROUND_BLUR", "BACKGROUND_BLUR_SUPPORTED_2",
+                "BACKGROUND_BLUR_STATUS_DEFAULT"}) {
+            try {
+                Field f = cfg.getDeclaredField(name);
+                f.setAccessible(true);
+                forceStatic(f, "DeviceConfig." + name, false);
+                any = true;
+            } catch (Throwable ignored) {
+            }
+        }
         try {
-            Class<?> materialUtils = Xp.findClass(CLS_MATERIAL_UTILS, cl);
-            Xp.hookAll("sysui.glass.theme_changed", materialUtils, "onDefaultThemeChanged", chain -> {
-                Object[] args = chain.getArgs().toArray();
-                if (args.length == 1) args[0] = Boolean.TRUE;
-                return chain.proceed(args);
+            Field enabled = cfg.getDeclaredField("mBackgroundBlurEnabled");
+            enabled.setAccessible(true);
+            if ((Integer) enabled.get(null) < 1) enabled.setInt(null, 1);
+            any = true;
+        } catch (Throwable ignored) {
+        }
+        try {
+            Field version = cfg.getDeclaredField("OS2_ADVANCED_VISUAL_VERSION");
+            version.setAccessible(true);
+            if ((Integer) version.get(null) < 1) version.setInt(null, 1);
+            any = true;
+        } catch (Throwable ignored) {
+        }
+        if (!any) {
+            STATUS.put("adv-material", "no fields on " + CLS_DEVICE_CONFIG);
+            return;
+        }
+        try {
+            Xp.hookAllConstructors(idPrefix + ".glass.adv_material_ctor", cfg, chain -> {
+                Object result = chain.proceed();
+                forceAdvancedMaterial(cfg);
+                return result;
             });
-            ok("glass-theme");
-        } catch (Throwable t) {
-            failed("glass-theme", t);
+        } catch (Throwable ignored) {
+        }
+        ok("adv-material");
+    }
+
+    private static void forceAdvancedMaterial(Class<?> cfg) {
+        for (String name : new String[] {
+                "SUPPORT_BACKGROUND_BLUR", "BACKGROUND_BLUR_SUPPORTED_2"}) {
+            try {
+                Field f = cfg.getDeclaredField(name);
+                f.setAccessible(true);
+                f.setBoolean(null, true);
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Field enabled = cfg.getDeclaredField("mBackgroundBlurEnabled");
+            enabled.setAccessible(true);
+            if ((Integer) enabled.get(null) < 1) enabled.setInt(null, 1);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void softGlassTheme(ClassLoader cl, String idPrefix) {
+        Class<?> materialUtils = findClassAny(cl, CLS_MATERIAL_UTILS);
+        if (materialUtils != null) {
+            try {
+                Xp.hookAll(idPrefix + ".glass.theme_changed", materialUtils, "onDefaultThemeChanged", chain -> {
+                    Object[] args = chain.getArgs().toArray();
+                    if (args.length == 1) args[0] = Boolean.TRUE;
+                    return chain.proceed(args);
+                });
+                ok("glass-theme");
+            } catch (Throwable t) {
+                failed("glass-theme", t);
+            }
+        } else {
+            STATUS.put("glass-theme", "not present (OS3 build - theme flag + keyguard flag only)");
         }
         try {
             Class<?> themeUtils = Xp.findClass(CLS_SYSUI_THEME_UTILS, cl);
             Field flag = themeUtils.getDeclaredField("sDefaultSysUiTheme");
             flag.setAccessible(true);
             forceStatic(flag, "ThemeUtils.sDefaultSysUiTheme", false);
-            Class<?> config = Xp.findClass(CLS_CONFIG_CONTROLLER, cl);
-            Xp.hookAll("sysui.glass.config_changed", config, "onConfigurationChanged", chain -> {
-                Object result = chain.proceed();
-                try {
-                    flag.setBoolean(null, true);
-                } catch (Throwable ignored) {
-                    // A flag we cannot set is glass that goes away, not a broken shade.
-                }
-                return result;
-            });
+            Class<?> config = findClassAny(cl, CLS_CONFIG_CONTROLLER);
+            if (config != null) {
+                Xp.hookAll(idPrefix + ".glass.config_changed", config, "onConfigurationChanged", chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        flag.setBoolean(null, true);
+                    } catch (Throwable ignored) {
+                    }
+                    return result;
+                });
+            }
             ok("glass-theme-flag");
         } catch (Throwable t) {
             failed("glass-theme-flag", t);
+        }
+        keyguardDefaultTheme(cl, idPrefix);
+    }
+
+    private static void keyguardDefaultTheme(ClassLoader cl, String idPrefix) {
+        String what = "glass-keyguard-theme";
+        try {
+            Class<?> injector = findClassAny(cl, CLS_DOZE_HOST_INJECTOR);
+            if (injector == null) {
+                STATUS.put(what, "not present");
+                return;
+            }
+            Field flag = null;
+            try {
+                flag = injector.getDeclaredField("mLockscreenIsDefaultTheme");
+                flag.setAccessible(true);
+            } catch (Throwable ignored) {
+            }
+            final Field f = flag;
+            Xp.hookAllConstructors(idPrefix + ".glass.keyguard_theme_ctor", injector, chain -> {
+                Object result = chain.proceed();
+                if (f != null) {
+                    try {
+                        f.setBoolean(chain.getThisObject(), true);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                return result;
+            });
+            if (f != null) {
+                for (String name : new String[] {
+                        "isLockscreenDefaultTheme", "getLockscreenIsDefaultTheme"}) {
+                    try {
+                        Xp.hookAll(idPrefix + ".glass.keyguard_theme_get." + Xp.slug(name),
+                                injector, name, chain -> Boolean.TRUE);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            ok(what);
+        } catch (Throwable t) {
+            failed(what, t);
         }
     }
 
@@ -1085,7 +1240,9 @@ public final class HyperTweaks {
             return;
         }
         try {
-            for (String name : new String[] {"getDefaultPluginTheme", "getDefaultSysUiTheme"}) {
+            for (String name : new String[] {
+                    "getDefaultPluginTheme", "getDefaultSysUiTheme",
+                    "isDefaultPluginTheme", "isDefaultSysUiTheme"}) {
                 try {
                     Xp.hookAll(idPrefix + ".glass.default_get." + Xp.slug(name), themeUtils, name,
                             chain -> Boolean.TRUE);
@@ -1160,44 +1317,71 @@ public final class HyperTweaks {
         f.setBoolean(null, true);
     }
 
-    /** Newer builds keep their own copy of the answer; these are the two that ask. */
+    /** Newer builds keep their own copy of the answer; OS3 and OS4 spell the getter differently. */
     private static void pluginMaterialGuards(ClassLoader cl, String idPrefix) {
-        try {
-            Class<?> blurCompat = Xp.findClass(CLS_MI_BLUR_COMPAT, cl);
-            // The stock answer is "material supported AND the user's advanced material switch is
-            // on (getBlurCompat == 1) AND the default theme". Only the theme half is ours to lift.
-            // Answering true outright also overrode the switch: with advanced material off, the
-            // control centre took the material path anyway, skipped its plain card backgrounds,
-            // and drew no blur either - a media card with no backdrop at all (#121). Without the
-            // switch's own reader there is nothing safe to say, so the hook is left out.
-            final java.lang.reflect.Method blurOf = blurCompat.getDeclaredMethod(
-                    "getBlurCompat", android.content.res.Configuration.class);
-            blurOf.setAccessible(true);
-            Xp.hookAll(idPrefix + ".glass.blur_compat",
-                    blurCompat, "getBackgroundMaterialOpenedInDefaultTheme", chain -> {
-                        Object stock = chain.proceed();
-                        if (Boolean.TRUE.equals(stock)) return stock;
-                        try {
-                            Object arg = chain.getArgs().isEmpty() ? null : chain.getArgs().get(0);
-                            if (!(arg instanceof android.content.Context)) return stock;
-                            android.content.res.Configuration config =
-                                    ((android.content.Context) arg).getResources().getConfiguration();
-                            Object blur = blurOf.invoke(null, config);
-                            return (blur instanceof Integer && (Integer) blur == 1) ? Boolean.TRUE : stock;
-                        } catch (Throwable t) {
-                            // Unreadable switch: the stock answer, not glass the user turned off.
-                            return stock;
-                        }
-                    });
-        } catch (Throwable t) {
-            failed("glass-blur-compat", t);
+        Class<?> blurCompat = findClassAny(cl, CLS_MI_BLUR_COMPAT, CLS_MI_BLUR_COMPAT_OS3);
+        if (blurCompat == null) {
+            STATUS.put("glass-blur-compat", "not present");
+        } else {
+            final Method blurOf = blurReader(blurCompat);
+            boolean any = false;
+            for (String name : new String[] {
+                    "getBackgroundMaterialOpenedInDefaultTheme",
+                    "getBackgroundBlurOpenedInDefaultTheme",
+                    "getBackgroundBlurOpened"}) {
+                if (!hasMethod(blurCompat, name, 0) && !hasMethod(blurCompat, name, 1)) continue;
+                try {
+                    Xp.hookAll(idPrefix + ".glass.blur_compat." + Xp.slug(name), blurCompat, name,
+                            chain -> materialAnswer(blurOf, chain));
+                    any = true;
+                } catch (Throwable t) {
+                    failed("glass-blur-compat:" + Xp.slug(name), t);
+                }
+            }
+            if (any) {
+                ok("glass-blur-compat");
+            } else {
+                STATUS.put("glass-blur-compat", "no material getter on " + blurCompat.getName());
+            }
+        }
+        Class<?> controller = findClassAny(cl, CLS_DEFAULT_THEME_CONTROLLER);
+        if (controller == null) {
+            STATUS.put("glass-default-theme-controller", "not present (OS3)");
+            return;
         }
         try {
-            Class<?> controller = Xp.findClass(CLS_DEFAULT_THEME_CONTROLLER, cl);
             Xp.hookAll(idPrefix + ".glass.default_theme_controller",
                     controller, "isDefaultTheme", chain -> Boolean.TRUE);
+            ok("glass-default-theme-controller");
         } catch (Throwable t) {
             failed("glass-default-theme-controller", t);
+        }
+    }
+
+    private static Method blurReader(Class<?> blurCompat) {
+        try {
+            Method m = blurCompat.getDeclaredMethod("getBlurCompat",
+                    android.content.res.Configuration.class);
+            m.setAccessible(true);
+            return m;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Object materialAnswer(Method blurOf, XposedInterface.Chain chain)
+            throws Throwable {
+        Object stock = chain.proceed();
+        if (Boolean.TRUE.equals(stock) || blurOf == null) return stock;
+        Object arg = chain.getArgs().isEmpty() ? null : chain.getArgs().get(0);
+        android.content.res.Configuration config = arg instanceof android.content.Context
+                ? ((android.content.Context) arg).getResources().getConfiguration()
+                : android.content.res.Resources.getSystem().getConfiguration();
+        try {
+            Object blur = blurOf.invoke(null, config);
+            return blur instanceof Integer && (Integer) blur == 1 ? Boolean.TRUE : stock;
+        } catch (Throwable t) {
+            return stock;
         }
     }
 }

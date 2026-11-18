@@ -1913,18 +1913,42 @@ object MiniPlayerRuntime {
             val util = Class.forName("com.android.systemui.statusbar.notification.utils.NotificationUtil",
                 false, classLoader)
             (view.parent as? View)?.let { container -> run {
-                // Blur mode 1, the notification container radius, and through the window.
-                util.getMethod("applyContainerViewBlur", Context::class.java, View::class.java,
-                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
-                    Boolean::class.javaPrimitiveType).invoke(null, ctx, container, 0, 0, false)
-                View::class.java.getMethod("setMiGlassBlurRadius", Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType).invoke(container,
-                    res.getDimensionPixelSize(id("dimen", "notification_glass_small_blur_max_radius")),
-                    res.getDimensionPixelSize(id("dimen", "notification_glass_big_blur_max_radius")))
+                // Match applyContainerViewBlur by its first two parameters: OS4 takes
+                // (Context, View, int, int, boolean) while OS3 takes (Context, View, boolean).
+                // Let each container step fail on its own so missing OS4 glass methods do not
+                // kick the whole dressing to the flat fallback scrim.
+                val blur = util.declaredMethods.firstOrNull {
+                    it.name == "applyContainerViewBlur" &&
+                        it.parameterTypes.size >= 3 &&
+                        it.parameterTypes[0] == Context::class.java &&
+                        it.parameterTypes[1] == View::class.java
+                }
+                if (blur != null) {
+                    val args = arrayOfNulls<Any>(blur.parameterTypes.size)
+                    args[0] = ctx
+                    args[1] = container
+                    for (i in 2 until blur.parameterTypes.size) {
+                        args[i] = when (blur.parameterTypes[i]) {
+                            Int::class.javaPrimitiveType -> 0
+                            Boolean::class.javaPrimitiveType -> false
+                            else -> null
+                        }
+                    }
+                    runCatching { blur.invoke(null, *args) }
+                        .onFailure { missed.add("containerBlur"); Xp.w("MCMini: applyContainerViewBlur not applied: $it") }
+                } else {
+                    missed.add("containerBlur")
+                }
+                runCatching {
+                    View::class.java.getMethod("setMiGlassBlurRadius", Int::class.javaPrimitiveType,
+                        Int::class.javaPrimitiveType).invoke(container,
+                        res.getDimensionPixelSize(id("dimen", "notification_glass_small_blur_max_radius")),
+                        res.getDimensionPixelSize(id("dimen", "notification_glass_big_blur_max_radius")))
+                }.onFailure { missed.add("glassRadius") }
                 runCatching {
                     Class.forName("miuix.core.util.MiuiBlurUtils", false, classLoader)
                         .getMethod("setMiBlurWinType", View::class.java).invoke(null, container)
-                }
+                }.onFailure { missed.add("winType") }
                 if (notificationStyle) matchRowContainer(container)
             } }
             val worn = IslandMaterial.replay(view, classLoader)

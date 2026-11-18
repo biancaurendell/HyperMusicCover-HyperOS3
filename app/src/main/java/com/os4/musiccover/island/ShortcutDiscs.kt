@@ -112,7 +112,11 @@ internal class ShortcutDiscs(
         val placed = views.followHost.invert(views.hostInverse) && discToScreen.invert(discInverse)
         for (side in 0..1) {
             val button = button(side)
-            val shown = placed && discsWanted && button.isShown && button.width > 0 && button.height > 0
+            // On HyperOS 3 (no MiGlassCompat) the OEM torch/camera buttons draw their own circle
+            // and icon; painting our non-glass disc over them covered both icons in dark circles.
+            // Gate only the disc view here so discsWanted still feeds rowWanted.
+            val shown = IslandMaterial.hasGlassApi && placed && discsWanted &&
+                button.isShown && button.width > 0 && button.height > 0
             var disc = discs[side]
             if (!shown) {
                 if (disc != null && disc.visibility != View.GONE) disc.visibility = View.GONE

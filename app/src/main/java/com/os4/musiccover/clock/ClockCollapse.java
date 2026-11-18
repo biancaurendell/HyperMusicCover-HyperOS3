@@ -565,8 +565,9 @@ public final class ClockCollapse {
         sYTo = targetY(floor, natural);
         sExitToAod = false;
         // A wake's glyphs already settle after the size, on the OEM's own animation; a toggle's
-        // are given the same tail. See TOGGLE_GLYPH_RESPONSE.
-        start(Phase.ENTER, wake ? Float.NaN : TOGGLE_GLYPH_RESPONSE);
+        // are given the same tail when notifStateChange exists. On HyperOS 3 there is no OEM y
+        // channel to walk, so running a separate glyph spring would only delay landing.
+        start(Phase.ENTER, (wake || Main.sNotifStateChange == null) ? Float.NaN : TOGGLE_GLYPH_RESPONSE);
         // The OEM's own ink box as last measured - the reading that says whether its wake
         // animation had already begun when this entry was taken. LIVE, never a measurement of
         // its own: the entry that matters is taken from inside the pre-draw, where LIVE is this
@@ -584,7 +585,7 @@ public final class ClockCollapse {
         if (sPhase == Phase.OFF) return;
         float natural = naturalY();
         if (sPhase == Phase.AOD || !animate || !Main.screenOn() || Main.sContainer == null
-                || Float.isNaN(natural)) {
+                || (Float.isNaN(natural) && Main.sNotifStateChange != null)) {
             releaseNow("exit");
             return;
         }
@@ -598,10 +599,9 @@ public final class ClockCollapse {
         sYFrom = currentY(natural);
         sYTo = exitY(natural);
         sExitToAod = false;
-        // The entry's glyph tail, mirrored. Not by sizing for the full clock first: the glyphs
-        // are still squeezed and relatively far wider, and at full height they ran off both
-        // edges of the screen (recording 18:44). The pose follows the OEM's live clock instead.
-        start(Phase.EXIT, EXIT_GLYPH_RESPONSE);
+        // The entry's glyph tail, mirrored where notifStateChange exists; on HyperOS 3 our own
+        // pose spring carries the clock smoothly back to m.inkTop / m.unit on its own.
+        start(Phase.EXIT, Main.sNotifStateChange == null ? Float.NaN : EXIT_GLYPH_RESPONSE);
         Xp.log(TAG + "clock: exit y " + Main.r1(sYFrom) + " -> " + Main.r1(sYTo));
     }
 
@@ -1259,7 +1259,20 @@ public final class ClockCollapse {
     private static float roomBelow() {
         float y = naturalY();
         View c = Main.sContainer;
-        if (Float.isNaN(y) || c == null) return Float.NaN;
+        if (c == null) return Float.NaN;
+        if (Float.isNaN(y)) {
+            // HyperOS 3 emits no notifStateChange(y), so sLastSystemY stays NaN. Measure the
+            // same screen-space quantity directly: the top of the visible notification rows in
+            // NotificationStackScrollLayout (Float.MAX_VALUE when none are showing).
+            try {
+                float top = com.os4.musiccover.island.MiniPlayerRuntime.stackContentTop();
+                if (!Float.isNaN(top) && top > 0f && top < Float.MAX_VALUE / 2f) {
+                    y = top;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (Float.isNaN(y) || y >= Float.MAX_VALUE / 2f) return Float.NaN;
         float margin = Float.NaN;
         try {
             Object it = Xp.getObjectField(c, "keyguardClockNotifInteractor");

@@ -47,6 +47,7 @@ public final class UnlockSwipeRegion {
     private static volatile String sLast = "-";
 
     static void install(ClassLoader cl) {
+        boolean stackHooked = false;
         try {
             Class<?> injector = Xp.findClass(CLS_INJECTOR, cl);
             Xp.hookAll("sysui.unlock_region.scrollable", injector, "isInScrollableRegion", chain -> {
@@ -64,8 +65,16 @@ public final class UnlockSwipeRegion {
                     return result;
                 }
             });
+            stackHooked = true;
         } catch (Throwable t) {
             Xp.w(Main.TAG + "unlock region (stack) hook failed: " + t);
+        }
+        if (!stackHooked) {
+            // HyperOS 3 has no isInScrollableRegion on NotificationStackScrollLayoutInjector;
+            // installing only the panel half swallows swipe-up gestures that promote rows into
+            // islands. Install both halves or neither.
+            Xp.log(Main.TAG + "unlock region: skipped because stack half is absent on this build");
+            return;
         }
         try {
             Class<?> panel = Xp.findClass(CLS_PANEL, cl);

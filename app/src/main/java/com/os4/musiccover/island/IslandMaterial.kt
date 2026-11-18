@@ -67,12 +67,19 @@ internal object IslandMaterial {
     private var darkContextMethod: Method? = null
     private var backgroundNormal: Method? = null
     private var injector: Method? = null
+    @Volatile var hasGlassApi: Boolean = true
+        private set
+    @Volatile private var os3ModeActive: Boolean = false
+    private var os3MediaController: WeakReference<Any>? = null
 
     /** Told when a recipe arrives or changes, with its key. */
     private var onRecipe: ((String) -> Unit)? = null
 
     fun install(classLoader: ClassLoader, recipeChanged: (String) -> Unit) {
         onRecipe = recipeChanged
+        hasGlassApi = runCatching {
+            Xp.findClass("com.miui.systemui.util.MiGlassCompat", classLoader)
+        }.isSuccess
         val base = "com.android.systemui.statusbar.notification.style"
         runCatching {
             val cls = Xp.findClass("$base.domain.NotificationMaterialStateInteractor", classLoader)
@@ -128,6 +135,106 @@ internal object IslandMaterial {
             runCatching { Xp.hookAll("sysui.mini.apply", cls, "apply") { chain -> recordMedia(chain, cls) } }
                 .onFailure { Xp.w("MCMini: ${cls.simpleName}.apply not recorded: $it") }
         }
+        if (rowEffects == null && mediaEffects == null) {
+            os3ModeActive = true
+            installOs3Hooks(classLoader)
+        }
+    }
+
+    private fun installOs3Hooks(classLoader: ClassLoader) {
+        runCatching {
+            val rowInj = Xp.findClass(
+                "com.android.systemui.statusbar.notification.row.ExpandableNotificationRowInjector",
+                classLoader
+            )
+            Xp.hookAll("sysui.mini.os3_row_blur", rowInj, "updateBlurBg") { chain ->
+                recordOs3Row(chain)
+            }
+        }.onFailure { Xp.w("MCMini: OS3 row blur hook unavailable: $it") }
+        runCatching {
+            val mediaCtrl = Xp.findClass(
+                "com.android.systemui.statusbar.notification.mediacontrol.MiuiMediaViewControllerImpl",
+                classLoader
+            )
+            Xp.hookAllConstructors("sysui.mini.os3_media_ctor", mediaCtrl) { chain ->
+                val res = chain.proceed()
+                chain.thisObject?.let { os3MediaController = WeakReference(it) }
+                res
+            }
+            Xp.hookAll("sysui.mini.os3_media_blur", mediaCtrl, "updateMediaBackground") { chain ->
+                recordOs3Media(chain)
+            }
+        }.onFailure { Xp.w("MCMini: OS3 media blur hook unavailable: $it") }
+    }
+
+    private fun os3Style(ctx: Context?): String {
+        if (MiniPlayerScene.fullScreenAodActive) return "AOD"
+        val c = ctx ?: Main.sAppCtx
+        val night = c != null && (c.resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        return if (night) "DARK" else "LIGHT"
+    }
+
+    private fun recordOs3Row(chain: io.github.libxposed.api.XposedInterface.Chain): Any? {
+        val inj = chain.thisObject ?: return chain.proceed()
+        val row = runCatching { Xp.getObjectField(inj, "view") as? View }.getOrNull()
+        val eligible = row != null && effectDepth == 0 && recording == null &&
+            !(runCatching { Xp.callMethod(row, "isHeadsUpState") as? Boolean }.getOrNull() ?: false) &&
+            !(runCatching {
+                Xp.getObjectField(Xp.getObjectField(Xp.callMethod(row, "getEntry"), "mSbn"),
+                    "mIsFocusNotification") as? Boolean
+            }.getOrNull() ?: false)
+        val bg = if (eligible) rowBackground(row) else null
+        if (bg != null) {
+            recordTarget = bg
+            recording = ArrayList()
+        }
+        effectDepth++
+        val result = try {
+            chain.proceed()
+        } finally {
+            effectDepth--
+        }
+        if (bg != null) {
+            val list = recording.orEmpty()
+            recording = null
+            recordTarget = null
+            if (list.isNotEmpty()) {
+                lastRow = WeakReference(row)
+                keep("OS3_ROW/${os3Style(bg.context)}", list, bg.background, bg.context)
+            }
+        }
+        return result
+    }
+
+    private fun recordOs3Media(chain: io.github.libxposed.api.XposedInterface.Chain): Any? {
+        val ctrl = chain.thisObject ?: return chain.proceed()
+        os3MediaController = WeakReference(ctrl)
+        val bg = if (effectDepth == 0 && recording == null) {
+            runCatching {
+                Xp.getObjectField(Xp.getObjectField(ctrl, "holder"), "mediaBg") as? View
+            }.getOrNull()
+        } else null
+        if (bg != null) {
+            recordTarget = bg
+            recording = ArrayList()
+        }
+        effectDepth++
+        val result = try {
+            chain.proceed()
+        } finally {
+            effectDepth--
+        }
+        if (bg != null) {
+            val list = recording.orEmpty()
+            recording = null
+            recordTarget = null
+            if (list.isNotEmpty()) {
+                keep("media:OS3_MEDIA/${os3Style(bg.context)}", list, bg.background, bg.context)
+            }
+        }
+        return result
     }
 
     private fun method(o: Any, name: String): Method = getValue.getOrPut(o.javaClass) {
@@ -244,7 +351,8 @@ internal object IslandMaterial {
                         it.parameterTypes.any { p -> View::class.java.isAssignableFrom(p) }
                 }.forEach { m ->
                     m.isAccessible = true
-                    Xp.hook("sysui.mini.glass." + Xp.slug(className.substringAfterLast('.')) + "." + Xp.slug(m.name), m) { chain ->
+                    Xp.hook("sysui.mini.glass." + Xp.slug(className.substringAfterLast('.')) + "." +
+                        Xp.slug(m.name) + "_" + m.parameterTypes.size, m) { chain ->
                         val list = recording
                         val bg = recordTarget
                         val args = chain.args.toTypedArray()
@@ -281,6 +389,8 @@ internal object IslandMaterial {
 
     private fun rowBackground(row: Any?): View? = runCatching {
         backgroundNormal?.invoke(injector?.invoke(row ?: return null)) as? View
+    }.getOrNull() ?: runCatching {
+        Xp.getObjectField(row ?: return null, "mBackgroundNormal") as? View
     }.getOrNull()
 
     private fun styleName(): String? = runCatching {
@@ -374,6 +484,10 @@ internal object IslandMaterial {
 
     /** Whether a recipe with [key] is what the islands would wear now: worth dressing them again. */
     fun wouldWear(key: String): Boolean {
+        if (os3ModeActive) {
+            val st = os3Style(Main.sAppCtx)
+            return key == "OS3_ROW/$st" || (recipes["OS3_ROW/$st"] == null && key == "media:OS3_MEDIA/$st")
+        }
         val s = state() ?: return false
         if (key == s.key) return true
         return recipes[s.key] == null && key == mediaKey(s)
@@ -381,6 +495,14 @@ internal object IslandMaterial {
 
     /** The key the islands are dressed by; the last one known when the state cannot be read. */
     fun islandKey(context: Context?): String? {
+        if (os3ModeActive) {
+            val k = "OS3_ROW/${os3Style(context)}"
+            if (k != lastKnownKey) {
+                lastKnownKey = k
+                context?.let { c -> runCatching { prefs(c).edit().putString(LAST_KEY, k).apply() } }
+            }
+            return k
+        }
         val k = state()?.key
         if (k != null) {
             if (k != lastKnownKey) {
@@ -411,6 +533,18 @@ internal object IslandMaterial {
         val recipe = if (row != null) {
             worn = key
             row
+        } else if (os3ModeActive) {
+            val st = os3Style(ctx)
+            requestOs3Row(key)
+            val mk = "media:OS3_MEDIA/$st"
+            val media = recipes[mk] ?: load(ctx, classLoader, mk)
+            if (media == null) requestOs3Media(mk)
+            if (media == null) {
+                dressedAs[view]?.let { return "kept $it" }
+                error("no OS3 recipe yet for $key")
+            }
+            worn = mk
+            media
         } else {
             s?.let { requestRow(it) }
             val mk = s?.let(::mediaKey)
@@ -497,6 +631,31 @@ internal object IslandMaterial {
         }
     }
 
+    private fun requestOs3Row(key: String) {
+        if (!mayAsk(key)) return
+        Gen.post {
+            runCatching {
+                if (recipes[key] != null) return@runCatching
+                val row = ordinaryRow() ?: return@runCatching
+                val inj = injector?.invoke(row) ?: return@runCatching
+                Xp.callMethod(inj, "updateBlurBg", 0, 0, false)
+                MiniPlayerRuntime.matNoteFor("asked OS3 row updateBlurBg for $key")
+            }.onFailure { Xp.log("MCMini: OS3 row blur not asked again: $it") }
+        }
+    }
+
+    private fun requestOs3Media(mk: String) {
+        if (!mayAsk(mk)) return
+        Gen.post {
+            runCatching {
+                if (recipes[mk] != null) return@runCatching
+                val ctrl = os3MediaController?.get() ?: return@runCatching
+                Xp.callMethod(ctrl, "updateMediaBackground")
+                MiniPlayerRuntime.matNoteFor("asked OS3 media updateMediaBackground for $mk")
+            }.onFailure { Xp.log("MCMini: OS3 media blur not asked again: $it") }
+        }
+    }
+
     private fun applyMethod(effect: Any): Method = effect.javaClass.declaredMethods.first {
         it.name == "apply" && it.parameterTypes.size == 2 && it.parameterTypes[0] == Any::class.java
     }.apply { isAccessible = true }
@@ -538,9 +697,16 @@ internal object IslandMaterial {
         if (now - inkAt < STATE_MS) return inkCached
         inkAt = now
         runCatching {
-            val fullAod = fullAodFlag?.getBoolean(null) ?: false
-            val glass = interactor?.get()?.let { glassMethod?.invoke(it) as? Boolean }
-                ?: (android.provider.Settings.Secure.getInt(context.contentResolver, "material_style", 1) == 1)
+            val fullAod = MiniPlayerScene.fullScreenAodActive ||
+                (runCatching { fullAodFlag?.getBoolean(null) }.getOrNull() ?: false)
+            val glass = if (!hasGlassApi) {
+                (context.resources.configuration.uiMode and
+                    android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                    android.content.res.Configuration.UI_MODE_NIGHT_YES
+            } else {
+                interactor?.get()?.let { glassMethod?.invoke(it) as? Boolean }
+                    ?: (android.provider.Settings.Secure.getInt(context.contentResolver, "material_style", 1) == 1)
+            }
             val from = if (fullAod || glass) darkContext(context) else context
             val ids = inkIds ?: context.resources.let { res ->
                 intArrayOf(res.getIdentifier("media_primary_text", "color", "com.android.systemui"),
@@ -583,7 +749,7 @@ internal object IslandMaterial {
         if (sysuiVersion < 0) sysuiVersion = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
         }.getOrDefault(0L)
-        return "island_recipe_v2/$sysuiVersion/$key"
+        return "island_recipe_v3/$sysuiVersion/$key"
     }
 
     private fun save(context: Context, key: String, list: List<Recorded>, bg: Drawable?) {
@@ -663,7 +829,8 @@ internal object IslandMaterial {
                         "s" -> o.getString("x")
                         "ia" -> o.getJSONArray("x").let { x -> IntArray(x.length()) { x.getInt(it) } }
                         "fa" -> o.getJSONArray("x").let { x -> FloatArray(x.length()) { x.getDouble(it).toFloat() } }
-                        "ctx" -> context
+                        "ctx" -> if (os3ModeActive && (key.endsWith("/AOD") || key.endsWith("/DARK")))
+                            darkContext(context) else context
                         else -> error("argument type ${o.getString("t")}")
                     }
                 }
@@ -690,7 +857,8 @@ internal object IslandMaterial {
 
     fun describe(): String {
         val s = state()
-        return "imat=[state=${s?.let { "${it.typeName}/${it.styleName}" } ?: "none"} key=${s?.key ?: lastKnownKey} " +
+        return "imat=[state=${s?.let { "${it.typeName}/${it.styleName}" } ?: if (os3ModeActive) "OS3/${os3Style(Main.sAppCtx)}" else "none"} " +
+            "key=${islandKey(Main.sAppCtx)} " +
             "interactor=${interactor?.get() != null} recipes={" +
             recipes.entries.joinToString(",") { (k, r) -> "$k:${r.calls.size}" } +
             "} clears={${clears.keys.joinToString(",")}} sdf=${lastSdf != null} row=${lastRow?.get() != null} " +
@@ -701,6 +869,7 @@ internal object IslandMaterial {
     fun retire() {
         dressedAs.clear()
         lastRow = null
+        os3MediaController = null
         recording = null
         recordTarget = null
         effectDepth = 0
