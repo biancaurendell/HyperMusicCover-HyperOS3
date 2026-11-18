@@ -371,7 +371,7 @@ private fun AboutContent(
                         ArrowPreference(
                             title = stringResource(R.string.about_source_code),
                             summary = stringResource(R.string.about_source_code_summary),
-                            onClick = { uriHandler.openUri("https://github.com/zyl6932/HyperMusicCover") },
+                            onClick = { uriHandler.openUri("https://github.com/biancaurendell/HyperMusicCover-HyperOS3") },
                         )
                         ArrowPreference(
                             title = stringResource(R.string.about_telegram),
@@ -397,7 +397,7 @@ private fun AboutContent(
                         ArrowPreference(
                             title = stringResource(R.string.about_feedback),
                             summary = stringResource(R.string.about_feedback_summary),
-                            onClick = { uriHandler.openUri("https://github.com/zyl6932/HyperMusicCover/issues") },
+                            onClick = { uriHandler.openUri("https://github.com/biancaurendell/HyperMusicCover-HyperOS3/issues") },
                         )
                     }
                     Card(

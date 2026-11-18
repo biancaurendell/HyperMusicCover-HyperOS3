@@ -28,17 +28,17 @@ import java.security.MessageDigest
  * treats a question the module did not answer.
  */
 
-private const val REPO = "zyl6932/HyperMusicCover"
+private const val REPO = "biancaurendell/HyperMusicCover-HyperOS3"
 private const val RELEASES_LIST = "https://api.github.com/repos/$REPO/releases"
 
 /** The package this app ships as. A fork changes it, and a fork must never self-update. */
 private const val OFFICIAL_APPLICATION_ID = "com.github.zyl6932.HyperMusicCover"
 
-/** `v1.2.3`, and only that: three numeric parts, each within the width the versionCode packs. */
-private val STABLE_TAG = Regex("^v(\\d{1,3})\\.(\\d{1,2})\\.(\\d{1,2})$")
+/** `v1.2.3` or `v1.2.3-os3.4`. */
+private val STABLE_TAG = Regex("^v(\\d{1,3})\\.(\\d{1,2})\\.(\\d{1,2})(?:-os3\\.(\\d{1,3}))?$")
 
-/** The leading triple of a local version name, nightly `-nightly.<date>.<sha>` suffixes and all. */
-private val LEADING_TRIPLE = Regex("^(\\d{1,3})\\.(\\d{1,2})\\.(\\d{1,2})")
+/** The leading version tuple of a local version name, optional `-os3.N` suffix included. */
+private val LEADING_TRIPLE = Regex("^(\\d{1,3})\\.(\\d{1,2})\\.(\\d{1,2})(?:-os3\\.(\\d{1,3}))?")
 
 /** One release, as much of it as this app uses. GitHub's release object carries dozens more. */
 internal data class GithubRelease(
@@ -165,7 +165,7 @@ object UpdateApi {
      * with this and nothing else.
      */
     private const val RELEASE_CERT_SHA256 =
-        "f5b62166f821734dd854c94a254223b2c49252e3681ee3d31238d1814ad5e6d5"
+        "135cdbcd7478718d8381229a9ba4a6a3d91489eebc4d6299899520318e7643d2"
 
     /**
      * Is [file] an APK this project is willing to install?
@@ -287,14 +287,17 @@ object UpdateApi {
     private fun parseRelease(release: GithubRelease): Release? {
         if (release.prerelease) return null
         val match = STABLE_TAG.matchEntire(release.tagName) ?: return null
-        val (major, minor, patch) = match.destructured
+        val major = match.groupValues[1].toInt()
+        val minor = match.groupValues[2].toInt()
+        val patch = match.groupValues[3].toInt()
+        val os3Rev = match.groupValues[4].takeIf { it.isNotEmpty() }?.toInt() ?: 0
         val apk = release.assets.firstOrNull { it.name == "HyperMusicCover-${release.tagName}.apk" }
             ?: release.assets.firstOrNull {
-                it.name.startsWith("HyperMusicCover-v") && it.name.endsWith(".apk")
+                it.name.startsWith("HyperMusicCover-") && it.name.endsWith(".apk")
             }
         return Release(
             versionName = release.tagName.removePrefix("v"),
-            versionCode = (major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt()) * 1000,
+            versionCode = (major * 10_000 + minor * 100 + patch) * 100 + os3Rev,
             notes = release.body.trim(),
             apkUrl = apk?.url,
             releaseUrl = release.htmlUrl,
@@ -321,19 +324,26 @@ object UpdateApi {
     /**
      * Is a release newer than the build we are running?
      *
-     * The dotted triple is compared part by part and preferred, because the packed versionCode
-     * only orders correctly while minor and patch each stay under 100. `v1.2.345` packs to 10545
-     * and would beat the later `v1.3.0` at 10300 - the release workflow accepts any numeric part,
-     * so nothing upstream prevents that tag. The packed comparison stays as the fallback for a
-     * local version name that does not parse at all.
+     * Compares (major, minor, patch, os3Rev) part by part so both `0.9.57-os3.3 -> 0.9.57-os3.4`
+     * and `0.9.57-os3.4 -> 0.9.58` order strictly monotonically.
      */
     private fun isNewer(versionName: String, versionCode: Int): Boolean {
-        val local = LEADING_TRIPLE.find(BuildConfig.VERSION_NAME)?.value
-        val remote = LEADING_TRIPLE.find(versionName)?.value
-        if (local != null && remote != null) {
-            val l = local.split('.').map(String::toInt)
-            val r = remote.split('.').map(String::toInt)
-            for (i in 0..2) if (r[i] != l[i]) return r[i] > l[i]
+        val lm = LEADING_TRIPLE.find(BuildConfig.VERSION_NAME)
+        val rm = LEADING_TRIPLE.find(versionName)
+        if (lm != null && rm != null) {
+            val l = intArrayOf(
+                lm.groupValues[1].toInt(),
+                lm.groupValues[2].toInt(),
+                lm.groupValues[3].toInt(),
+                lm.groupValues[4].takeIf { it.isNotEmpty() }?.toInt() ?: 0,
+            )
+            val r = intArrayOf(
+                rm.groupValues[1].toInt(),
+                rm.groupValues[2].toInt(),
+                rm.groupValues[3].toInt(),
+                rm.groupValues[4].takeIf { it.isNotEmpty() }?.toInt() ?: 0,
+            )
+            for (i in 0..3) if (r[i] != l[i]) return r[i] > l[i]
             return false
         }
         return versionCode > BuildConfig.VERSION_CODE
